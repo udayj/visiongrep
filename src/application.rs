@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::embedding::embed_text;
 use crate::error::VisionGrepError;
 use crate::index::{
-    ImageFile, ImageIndex, IngestEvent, SearchRoot, discover_images, embed_images,
-    ingest_into_index,
+    ImageFile, ImageIndex, IngestEvent, SearchRoot, StagedImageIndex, discover_images,
+    embed_images, ingest_into_index,
 };
 use crate::model::{
     ArtifactEvent, ModelPaths, TextSession, VisionSession, ensure_text_artifacts,
@@ -63,12 +63,9 @@ pub(crate) fn search(
         CacheMode::Disabled => search_without_cache(&root, &files, request, on_event),
         CacheMode::Use => {
             let index = ImageIndex::open(root.filesystem_path())?;
-            search_with_cache(&root, &files, request, index, false, on_event)
+            search_with_cache(&root, &files, request, index, on_event)
         }
-        CacheMode::Reindex => {
-            let index = ImageIndex::open(root.filesystem_path())?;
-            search_with_cache(&root, &files, request, index, true, on_event)
-        }
+        CacheMode::Reindex => reindex_and_search(&root, &files, request, on_event),
     }
 }
 
@@ -111,33 +108,61 @@ fn search_with_cache(
     files: &[ImageFile],
     request: &SearchRequest,
     mut index: ImageIndex,
-    reindex: bool,
     on_event: &mut impl FnMut(SearchEvent),
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
-    if reindex && files.is_empty() {
-        index.clear()?;
-        return Ok(Vec::new());
-    }
-
-    let missing = if reindex {
-        files.to_vec()
-    } else {
-        index.remove_stale_entries(files)?;
-        index.images_needing_embedding(files)?
-    };
+    index.remove_stale_entries(files)?;
+    let missing = index.images_needing_embedding(files)?;
     if !missing.is_empty() {
         let paths = model_paths()?;
         ensure_vision(&paths, on_event)?;
         let mut vision = VisionSession::load(&paths)?;
-        if reindex {
-            // Keep the previous cache intact until artifacts and the model session are usable.
-            index.clear()?;
-        }
         ingest_into_index(root, &mut index, &missing, &mut vision, &mut |event| {
             on_event(SearchEvent::Index(event));
         })?;
     }
 
+    search_index(root, request, &mut index, on_event)
+}
+
+/// Builds a complete sibling database and exposes it only after every image was processed.
+fn reindex_and_search(
+    root: &SearchRoot,
+    files: &[ImageFile],
+    request: &SearchRequest,
+    on_event: &mut impl FnMut(SearchEvent),
+) -> Result<Vec<SearchResult>, VisionGrepError> {
+    // Opening the active database first lets SQLite recover any hot journal before its main file is
+    // eventually replaced. The connection is kept alive while the sibling index is constructed.
+    let active_index = ImageIndex::open(root.filesystem_path())?;
+    let mut vision = if files.is_empty() {
+        None
+    } else {
+        let paths = model_paths()?;
+        ensure_vision(&paths, on_event)?;
+        Some(VisionSession::load(&paths)?)
+    };
+    let mut staged = StagedImageIndex::create(root.filesystem_path())?;
+
+    if let Some(vision) = &mut vision {
+        ingest_into_index(root, staged.index_mut(), files, vision, &mut |event| {
+            on_event(SearchEvent::Index(event));
+        })?;
+    }
+
+    // Finish all fallible model work against the staged database. Once installation starts, the
+    // rebuild is complete and this invocation no longer needs to reopen the replacement.
+    let results = search_index(root, request, staged.index_mut(), on_event)?;
+    drop(active_index);
+    staged.install()?;
+    Ok(results)
+}
+
+fn search_index(
+    root: &SearchRoot,
+    request: &SearchRequest,
+    index: &mut ImageIndex,
+    on_event: &mut impl FnMut(SearchEvent),
+) -> Result<Vec<SearchResult>, VisionGrepError> {
     let image_records = index.all_embeddings(root.display_path())?;
     if image_records.is_empty() {
         return Ok(Vec::new());

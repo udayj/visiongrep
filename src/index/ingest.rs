@@ -5,7 +5,7 @@ use crate::model::VisionSession;
 use super::scan::{ImageFile, SearchRoot};
 use super::store::{ImageIndex, ImageRecord, ImageUpdate};
 
-const INDEX_BATCH_SIZE: usize = 256;
+pub(super) const INDEX_BATCH_SIZE: usize = 256;
 
 pub(crate) enum IngestEvent {
     Started { total: u64 },

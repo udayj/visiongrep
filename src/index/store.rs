@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
+use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
 use crate::embedding::NormalizedEmbedding;
 use crate::error::VisionGrepError;
@@ -12,6 +13,8 @@ use crate::error::VisionGrepError;
 use super::scan::ImageFile;
 
 const EMBEDDING_CACHE_VERSION: i64 = 2;
+const INDEX_FILE_NAME: &str = ".visiongrep.db";
+const REINDEX_FILE_PREFIX: &str = ".visiongrep.db.reindex-";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
@@ -34,10 +37,20 @@ pub(crate) struct ImageIndex {
     conn: Connection,
 }
 
+/// A complete replacement index that remains invisible until it is verified and installed.
+///
+/// The temporary file lives beside the active database, so installing it is a same-filesystem
+/// rename. Dropping this value after any build error removes the staged database and leaves the
+/// active index untouched.
+pub(crate) struct StagedImageIndex {
+    index: ImageIndex,
+    temporary: NamedTempFile,
+    destination: PathBuf,
+}
+
 impl ImageIndex {
     pub(crate) fn open(root: &Path) -> Result<Self, VisionGrepError> {
-        let db_path = root.join(".visiongrep.db");
-        let conn = Connection::open(db_path)?;
+        let conn = Connection::open(root.join(INDEX_FILE_NAME))?;
         Self::from_connection(conn)
     }
 
@@ -101,13 +114,6 @@ impl ImageIndex {
                 stmt.execute([path])?;
             }
         }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    pub(crate) fn clear(&mut self) -> Result<(), VisionGrepError> {
-        let transaction = self.conn.transaction()?;
-        transaction.execute_batch("DELETE FROM images; DELETE FROM queries;")?;
         transaction.commit()?;
         Ok(())
     }
@@ -259,6 +265,75 @@ impl ImageIndex {
             transaction.pragma_update(None, "user_version", EMBEDDING_CACHE_VERSION)?;
         }
         transaction.commit()?;
+        Ok(())
+    }
+
+    fn close(self) -> Result<(), VisionGrepError> {
+        self.conn
+            .close()
+            .map_err(|(_, source)| VisionGrepError::Index(source))
+    }
+}
+
+impl StagedImageIndex {
+    pub(crate) fn create(root: &Path) -> Result<Self, VisionGrepError> {
+        let temporary = TempFileBuilder::new()
+            .prefix(REINDEX_FILE_PREFIX)
+            .tempfile_in(root)
+            .map_err(|source| VisionGrepError::IndexFile {
+                operation: "creating staged reindex",
+                path: root.to_owned(),
+                source,
+            })?;
+        let conn = Connection::open(temporary.path())?;
+        let index = ImageIndex::from_connection(conn)?;
+
+        Ok(Self {
+            index,
+            temporary,
+            destination: root.join(INDEX_FILE_NAME),
+        })
+    }
+
+    pub(crate) fn index_mut(&mut self) -> &mut ImageIndex {
+        &mut self.index
+    }
+
+    /// Verifies the completed database before making it visible at the active index path.
+    pub(crate) fn install(self) -> Result<(), VisionGrepError> {
+        let Self {
+            index,
+            temporary,
+            destination,
+        } = self;
+        let check = index
+            .conn
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))?;
+        if check != "ok" {
+            return Err(VisionGrepError::IndexIntegrity {
+                path: temporary.path().to_owned(),
+                detail: check,
+            });
+        }
+
+        // Reading through the typed API also validates every persisted embedding blob.
+        index.all_embeddings(Path::new(""))?;
+        index.close()?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|source| VisionGrepError::IndexFile {
+                operation: "syncing staged reindex",
+                path: temporary.path().to_owned(),
+                source,
+            })?;
+        temporary
+            .persist(&destination)
+            .map_err(|error| VisionGrepError::IndexFile {
+                operation: "installing staged reindex",
+                path: destination.clone(),
+                source: error.error,
+            })?;
         Ok(())
     }
 }
@@ -441,5 +516,88 @@ mod tests {
                 .is_err()
         );
         assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_staged_reindex_preserves_the_complete_active_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let original_file = image_file(PathBuf::from("original.jpg"));
+        let original_query = embedding();
+        {
+            let mut original = ImageIndex::open(directory.path()).unwrap();
+            insert(&mut original, &original_file);
+            original
+                .upsert_query_embedding("cached query", &original_query)
+                .unwrap();
+        }
+
+        let mut staged = StagedImageIndex::create(directory.path()).unwrap();
+        let first_batch = (0..super::super::ingest::INDEX_BATCH_SIZE)
+            .map(|number| ImageUpdate::Upsert {
+                file: image_file(PathBuf::from(format!("staged-{number}.jpg"))),
+                embedding: embedding(),
+            })
+            .collect();
+        staged.index_mut().apply_updates(first_batch).unwrap();
+
+        // A reader opening the active path during the rebuild still sees the complete old index.
+        let concurrent_reader = ImageIndex::open(directory.path()).unwrap();
+        assert_eq!(
+            concurrent_reader
+                .all_embeddings(Path::new(""))
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(concurrent_reader);
+
+        staged
+            .index_mut()
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_later_batch
+                 BEFORE INSERT ON images
+                 WHEN NEW.path = X'6661696C2E6A7067'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected later-batch failure');
+                 END;",
+            )
+            .unwrap();
+        let later_batch = vec![ImageUpdate::Upsert {
+            file: image_file(PathBuf::from("fail.jpg")),
+            embedding: embedding(),
+        }];
+
+        assert!(staged.index_mut().apply_updates(later_batch).is_err());
+        drop(staged);
+
+        let original = ImageIndex::open(directory.path()).unwrap();
+        let records = original.all_embeddings(Path::new("")).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, original_file.relative_path);
+        assert_eq!(
+            original.query_embedding("cached query").unwrap(),
+            Some(original_query)
+        );
+    }
+
+    #[test]
+    fn completed_staged_reindex_replaces_the_active_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let old_file = image_file(PathBuf::from("old.jpg"));
+        {
+            let mut original = ImageIndex::open(directory.path()).unwrap();
+            insert(&mut original, &old_file);
+        }
+
+        let new_file = image_file(PathBuf::from("new.jpg"));
+        let mut staged = StagedImageIndex::create(directory.path()).unwrap();
+        insert(staged.index_mut(), &new_file);
+        staged.install().unwrap();
+        let installed = ImageIndex::open(directory.path()).unwrap();
+
+        let records = installed.all_embeddings(Path::new("")).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, new_file.relative_path);
     }
 }

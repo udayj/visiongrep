@@ -201,8 +201,9 @@ loads neither ONNX model: the command reads cached image/query vectors and perfo
 Novel queries load only the text model. New or changed images load only the vision model unless the
 query is also novel.
 
-`--reindex` keeps the previous cache until model artifacts and the vision session are usable, then
-clears and rebuilds its contents. Image updates are written in bounded transactions.
+`--reindex` builds and verifies a unique sibling database using bounded write transactions, then
+atomically replaces the active index. A failed rebuild leaves the previous image and query caches
+untouched, and concurrent readers see either the previous complete index or the replacement.
 `--no-cache` skips reading and writing entirely — embeds everything fresh each run. Useful for scripting against small folders.
 The two flags are mutually exclusive.
 
@@ -229,7 +230,8 @@ their geometry.
 
 ### Text embedding
 
-1. Tokenize query using the matching downloaded `tokenizer.json` (BPE, max 77 tokens, pad/truncate)
+1. Tokenize with the matching `tokenizer.json`: include special tokens, truncate to 77 positions,
+   and right-pad to 77 with ID `1`, token `<|endoftext|>`, and attention-mask value `0`
 2. Run through `clip_text.onnx` — input `input_ids [1, 77]` and `attention_mask [1, 77]`, output `[1, 512]`
 3. L2-normalize the output vector
 

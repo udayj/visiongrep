@@ -122,6 +122,17 @@ pub(crate) enum VisionGrepError {
     #[error("index error: {0}")]
     Index(#[from] rusqlite::Error),
 
+    #[error("failed while {operation} image index at {path}: {source}")]
+    IndexFile {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("staged image index at {path} failed its integrity check: {detail}")]
+    IndexIntegrity { path: PathBuf, detail: String },
+
     #[error("image index version {found} is newer than the supported version {supported}")]
     IndexVersionTooNew { found: i64, supported: i64 },
 
