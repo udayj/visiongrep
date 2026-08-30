@@ -3,6 +3,21 @@ use std::path::PathBuf;
 use ort::session::builder::SessionBuilder;
 
 #[derive(Debug, thiserror::Error)]
+pub(crate) enum EmbeddingError {
+    #[error("expected {expected} values, got {actual}")]
+    Dimension { expected: usize, actual: usize },
+
+    #[error("expected {expected} bytes, got {actual}")]
+    ByteLength { expected: usize, actual: usize },
+
+    #[error("contains a non-finite value")]
+    NonFinite,
+
+    #[error("has invalid L2 norm {norm}")]
+    Norm { norm: f32 },
+}
+
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum VisionGrepError {
     #[error("failed to download {artifact} from {url}: {source}")]
     DownloadRequest {
@@ -11,9 +26,6 @@ pub(crate) enum VisionGrepError {
         #[source]
         source: reqwest::Error,
     },
-
-    #[error("downloaded {artifact} from {url} without a valid content length")]
-    MissingContentLength { artifact: &'static str, url: String },
 
     #[error("failed while reading download stream for {artifact} from {url}: {source}")]
     DownloadRead {
@@ -26,8 +38,19 @@ pub(crate) enum VisionGrepError {
     #[error("checksum mismatch for {file}: expected {expected}, got {actual}")]
     Checksum {
         file: PathBuf,
-        expected: &'static str,
+        expected: String,
         actual: String,
+    },
+
+    #[error("artifact destination has no parent directory: {path}")]
+    ArtifactDestinationWithoutParent { path: PathBuf },
+
+    #[error("failed while {operation} at {path}: {source}")]
+    ArtifactFile {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
 
     #[error("failed to decode image {path}: {source}")]
@@ -38,13 +61,21 @@ pub(crate) enum VisionGrepError {
     },
 
     #[error(
-        "image {path} is too large to decode safely ({width}x{height}, {decoded_bytes} decoded bytes)"
+        "image {path} is too large to process safely ({width}x{height}, {decoded_bytes} decoded bytes, approximately {estimated_working_bytes} working bytes)"
     )]
     ImageTooLarge {
         path: PathBuf,
         width: u32,
         height: u32,
         decoded_bytes: u64,
+        estimated_working_bytes: u64,
+    },
+
+    #[error("image {path} has invalid dimensions {width}x{height}")]
+    InvalidImageDimensions {
+        path: PathBuf,
+        width: u32,
+        height: u32,
     },
 
     #[error("failed to read image metadata for {path}: {source}")]
@@ -59,6 +90,16 @@ pub(crate) enum VisionGrepError {
 
     #[error("search path is not a directory: {path}")]
     SearchPathNotDirectory { path: PathBuf },
+
+    #[error("failed to resolve search path {path}: {source}")]
+    SearchPathResolve {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("discovered image {path} is outside search root {root}")]
+    ImageOutsideSearchRoot { path: PathBuf, root: PathBuf },
 
     #[error("model file missing: {path}")]
     ModelMissing { path: PathBuf },
@@ -75,6 +116,9 @@ pub(crate) enum VisionGrepError {
     #[error("model did not return an output tensor")]
     MissingModelOutput,
 
+    #[error("model returned output shape {actual:?}; expected [1, {expected}]")]
+    UnexpectedModelOutputShape { expected: usize, actual: Vec<usize> },
+
     #[error("index error: {0}")]
     Index(#[from] rusqlite::Error),
 
@@ -89,6 +133,9 @@ pub(crate) enum VisionGrepError {
         #[source]
         source: serde_json::Error,
     },
+
+    #[error("cannot represent non-UTF-8 path in JSON: {path}")]
+    NonUtf8JsonPath { path: PathBuf },
 
     #[error("failed to locate home directory")]
     HomeDirectory,
@@ -107,28 +154,24 @@ pub(crate) enum VisionGrepError {
         source: tokenizers::Error,
     },
 
-    #[error("embedding for {kind} had invalid L2 norm {norm}")]
-    InvalidEmbeddingNorm { kind: &'static str, norm: f32 },
+    #[error("model produced an invalid {kind} embedding: {source}")]
+    InvalidModelEmbedding {
+        kind: &'static str,
+        #[source]
+        source: EmbeddingError,
+    },
 
-    #[error("embedding blob for {path} has invalid byte length {len}")]
-    InvalidEmbeddingBlob { path: PathBuf, len: usize },
-
-    #[error("cached embedding for query has invalid byte length {len}")]
-    InvalidQueryEmbeddingBlob { len: usize },
-
-    #[error("cached embedding for {path} contains a non-finite value")]
-    NonFiniteEmbedding { path: PathBuf },
-
-    #[error("cached query embedding contains a non-finite value")]
-    NonFiniteQueryEmbedding,
-
-    #[error(
-        "embedding dimensions differ for {path}: query has {query_len} values, image has {image_len}"
-    )]
-    EmbeddingDimensionMismatch {
+    #[error("cached embedding for {path} is invalid: {source}")]
+    InvalidCachedImageEmbedding {
         path: PathBuf,
-        query_len: usize,
-        image_len: usize,
+        #[source]
+        source: EmbeddingError,
+    },
+
+    #[error("cached query embedding is invalid: {source}")]
+    InvalidCachedQueryEmbedding {
+        #[source]
+        source: EmbeddingError,
     },
 
     #[error("image modification time is outside the supported range: {path}")]
@@ -143,4 +186,16 @@ pub(crate) enum VisionGrepError {
         #[source]
         source: std::num::TryFromIntError,
     },
+}
+
+impl VisionGrepError {
+    pub(crate) fn is_broken_pipe(&self) -> bool {
+        match self {
+            Self::Io(source) => source.kind() == std::io::ErrorKind::BrokenPipe,
+            Self::JsonOutput { source } => {
+                source.io_error_kind() == Some(std::io::ErrorKind::BrokenPipe)
+            }
+            _ => false,
+        }
+    }
 }

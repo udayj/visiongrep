@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::embedding::embed_text;
 use crate::error::VisionGrepError;
 use crate::index::{
-    ImageFile, ImageIndex, IngestEvent, discover_images, embed_images, embed_into_index,
+    ImageFile, ImageIndex, IngestEvent, SearchRoot, discover_images, embed_images,
+    ingest_into_index,
 };
 use crate::model::{
     ArtifactEvent, ModelPaths, TextSession, VisionSession, ensure_text_artifacts,
@@ -42,11 +43,6 @@ impl SearchRequest {
             cache_mode,
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn cache_mode(&self) -> CacheMode {
-        self.cache_mode
-    }
 }
 
 pub(crate) enum SearchEvent {
@@ -60,17 +56,18 @@ pub(crate) fn search(
     on_event: &mut impl FnMut(SearchEvent),
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
     validate_search_path(&request.path)?;
-    let files = discover_images(&request.path)?;
+    let root = SearchRoot::resolve(&request.path)?;
+    let files = discover_images(&root)?;
 
     match request.cache_mode {
-        CacheMode::Disabled => search_without_cache(&files, request, on_event),
+        CacheMode::Disabled => search_without_cache(&root, &files, request, on_event),
         CacheMode::Use => {
-            let index = ImageIndex::open(&request.path)?;
-            search_with_cache(&files, request, index, on_event)
+            let index = ImageIndex::open(root.filesystem_path())?;
+            search_with_cache(&root, &files, request, index, false, on_event)
         }
         CacheMode::Reindex => {
-            let index = ImageIndex::reindex(&request.path)?;
-            search_with_cache(&files, request, index, on_event)
+            let index = ImageIndex::open(root.filesystem_path())?;
+            search_with_cache(&root, &files, request, index, true, on_event)
         }
     }
 }
@@ -80,6 +77,7 @@ pub(crate) fn search(
 /// Model initialization is deferred until an image is present, and the text model is not loaded
 /// unless at least one image was embedded successfully.
 fn search_without_cache(
+    root: &SearchRoot,
     files: &[ImageFile],
     request: &SearchRequest,
     on_event: &mut impl FnMut(SearchEvent),
@@ -91,7 +89,7 @@ fn search_without_cache(
     let paths = model_paths()?;
     ensure_vision(&paths, on_event)?;
     let mut vision = VisionSession::load(&paths)?;
-    let image_records = embed_images(files, &mut vision, &mut |event| {
+    let image_records = embed_images(root, files, &mut vision, &mut |event| {
         on_event(SearchEvent::Index(event));
     })?;
     if image_records.is_empty() {
@@ -101,7 +99,7 @@ fn search_without_cache(
     ensure_text(&paths, on_event)?;
     let mut text = TextSession::load(&paths)?;
     let query_embedding = embed_text(&request.query, &mut text)?;
-    Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records)
+    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records))
 }
 
 /// Reconciles the on-disk index and loads only the model sessions required by the current state.
@@ -109,25 +107,38 @@ fn search_without_cache(
 /// An unchanged directory plus an exact cached query needs no ONNX session. Changed images require
 /// only the vision session, while a novel query requires only the text session.
 fn search_with_cache(
+    root: &SearchRoot,
     files: &[ImageFile],
     request: &SearchRequest,
     mut index: ImageIndex,
+    reindex: bool,
     on_event: &mut impl FnMut(SearchEvent),
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
-    index.remove_stale_entries(files)?;
-    let missing = index.images_needing_embedding(files)?;
+    if reindex && files.is_empty() {
+        index.clear()?;
+        return Ok(Vec::new());
+    }
+
+    let missing = if reindex {
+        files.to_vec()
+    } else {
+        index.remove_stale_entries(files)?;
+        index.images_needing_embedding(files)?
+    };
     if !missing.is_empty() {
-        // A changed file must not retain its previous embedding if decoding now fails.
-        index.remove_entries(&missing)?;
         let paths = model_paths()?;
         ensure_vision(&paths, on_event)?;
         let mut vision = VisionSession::load(&paths)?;
-        embed_into_index(&mut index, &missing, &mut vision, &mut |event| {
+        if reindex {
+            // Keep the previous cache intact until artifacts and the model session are usable.
+            index.clear()?;
+        }
+        ingest_into_index(root, &mut index, &missing, &mut vision, &mut |event| {
             on_event(SearchEvent::Index(event));
         })?;
     }
 
-    let image_records = index.all_embeddings()?;
+    let image_records = index.all_embeddings(root.display_path())?;
     if image_records.is_empty() {
         return Ok(Vec::new());
     }
@@ -144,7 +155,7 @@ fn search_with_cache(
         }
     };
 
-    Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records)
+    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records))
 }
 
 fn ensure_vision(

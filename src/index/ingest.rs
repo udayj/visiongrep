@@ -1,9 +1,11 @@
-use crate::embedding::embed_image;
+use crate::embedding::{NormalizedEmbedding, embed_image};
 use crate::error::VisionGrepError;
 use crate::model::VisionSession;
 
-use super::scan::ImageFile;
-use super::store::{ImageIndex, ImageRecord};
+use super::scan::{ImageFile, SearchRoot};
+use super::store::{ImageIndex, ImageRecord, ImageUpdate};
+
+const INDEX_BATCH_SIZE: usize = 256;
 
 pub(crate) enum IngestEvent {
     Started { total: u64 },
@@ -17,7 +19,8 @@ pub(crate) enum IngestEvent {
 /// Other failures abort the operation because they indicate an inference, persistence, or runtime
 /// problem rather than one bad input file. Events report progress without coupling ingestion to a
 /// particular presentation layer.
-pub(crate) fn embed_into_index(
+pub(crate) fn ingest_into_index(
+    root: &SearchRoot,
     index: &mut ImageIndex,
     files: &[ImageFile],
     session: &mut VisionSession,
@@ -25,11 +28,22 @@ pub(crate) fn embed_into_index(
 ) -> Result<(), VisionGrepError> {
     report_started(files.len(), on_event)?;
     let result = (|| {
-        for file in files {
-            if let Some(embedding) = embed_file(file, session, on_event)? {
-                index.upsert_embedding(file, &embedding)?;
+        for files in files.chunks(INDEX_BATCH_SIZE) {
+            let mut updates = Vec::with_capacity(files.len());
+            for file in files {
+                let update = match embed_image_with_skip_policy(root, file, session, on_event)? {
+                    Some(embedding) => ImageUpdate::Upsert {
+                        file: file.clone(),
+                        embedding,
+                    },
+                    None => ImageUpdate::Delete {
+                        relative_path: file.relative_path.clone(),
+                    },
+                };
+                updates.push(update);
+                on_event(IngestEvent::ImageProcessed);
             }
-            on_event(IngestEvent::ImageProcessed);
+            index.apply_updates(updates)?;
         }
         Ok(())
     })();
@@ -39,6 +53,7 @@ pub(crate) fn embed_into_index(
 
 /// Embeds files into memory with the same skip-versus-abort policy as persisted ingestion.
 pub(crate) fn embed_images(
+    root: &SearchRoot,
     files: &[ImageFile],
     session: &mut VisionSession,
     on_event: &mut impl FnMut(IngestEvent),
@@ -47,9 +62,9 @@ pub(crate) fn embed_images(
     let result = (|| {
         let mut records = Vec::with_capacity(files.len());
         for file in files {
-            if let Some(embedding) = embed_file(file, session, on_event)? {
+            if let Some(embedding) = embed_image_with_skip_policy(root, file, session, on_event)? {
                 records.push(ImageRecord {
-                    path: file.path.clone(),
+                    path: root.display_image_path(&file.relative_path),
                     embedding,
                 });
             }
@@ -73,15 +88,18 @@ fn report_started(
     Ok(())
 }
 
-fn embed_file(
+fn embed_image_with_skip_policy(
+    root: &SearchRoot,
     file: &ImageFile,
     session: &mut VisionSession,
     on_event: &mut impl FnMut(IngestEvent),
-) -> Result<Option<Vec<f32>>, VisionGrepError> {
-    match embed_image(&file.path, session) {
+) -> Result<Option<NormalizedEmbedding>, VisionGrepError> {
+    match embed_image(&root.image_path(&file.relative_path), session) {
         Ok(embedding) => Ok(Some(embedding)),
         Err(
-            error @ (VisionGrepError::ImageDecode { .. } | VisionGrepError::ImageTooLarge { .. }),
+            error @ (VisionGrepError::ImageDecode { .. }
+            | VisionGrepError::ImageTooLarge { .. }
+            | VisionGrepError::InvalidImageDimensions { .. }),
         ) => {
             on_event(IngestEvent::ImageSkipped(error));
             Ok(None)

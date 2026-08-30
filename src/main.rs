@@ -17,6 +17,7 @@ use crate::error::VisionGrepError;
 fn main() {
     let exit_status = match run() {
         Ok(status) => status,
+        Err(error) if error.is_broken_pipe() => ExitStatus::Found,
         Err(error) => {
             eprintln!("visiongrep: {error}");
             ExitStatus::OperationalError

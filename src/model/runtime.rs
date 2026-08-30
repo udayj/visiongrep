@@ -6,6 +6,7 @@ use ort::value::TensorRef;
 use tokenizers::{PaddingParams, PaddingStrategy, TruncationParams};
 
 use super::artifacts::ModelPaths;
+use crate::embedding::EMBEDDING_DIM;
 use crate::error::VisionGrepError;
 
 const TEXT_TOKENS: usize = 77;
@@ -112,6 +113,12 @@ fn extract_embedding(
         .next()
         .ok_or(VisionGrepError::MissingModelOutput)?;
     let output = output_value.try_extract_array::<f32>()?;
+    if output.shape() != [1, EMBEDDING_DIM] {
+        return Err(VisionGrepError::UnexpectedModelOutputShape {
+            expected: EMBEDDING_DIM,
+            actual: output.shape().to_vec(),
+        });
+    }
     Ok(output.iter().copied().collect())
 }
 
