@@ -12,7 +12,7 @@ use crate::ranking::DEFAULT_SIMILARITY_THRESHOLD;
     about = "Rust-native visual grep for local folders, scripts, and AI agents"
 )]
 pub(crate) struct Cli {
-    #[arg(help = "Natural language description of what to find")]
+    #[arg(value_parser = parse_query, help = "Natural language description of what to find")]
     query: String,
 
     #[arg(help = "Directory to search recursively")]
@@ -34,7 +34,19 @@ pub(crate) struct Cli {
     #[arg(long = "paths-only", help = "Output only matching paths, one per line")]
     paths_only: bool,
 
-    #[arg(long = "reindex", help = "Force re-embedding of all images")]
+    #[arg(
+        short = '0',
+        long = "null",
+        conflicts_with = "json",
+        help = "Output exact paths separated by NUL bytes"
+    )]
+    null: bool,
+
+    #[arg(
+        long = "reindex",
+        conflicts_with = "no_cache",
+        help = "Force re-embedding of all images"
+    )]
     reindex: bool,
 
     #[arg(long = "no-cache", help = "Skip reading and writing the index cache")]
@@ -59,7 +71,9 @@ impl Cli {
         } else {
             CacheMode::Use
         };
-        let output_format = if self.json {
+        let output_format = if self.null {
+            OutputFormat::PathsNull
+        } else if self.json {
             OutputFormat::Json
         } else if self.paths_only {
             OutputFormat::PathsOnly
@@ -78,6 +92,14 @@ impl Cli {
             output_format,
             quiet: self.quiet,
         }
+    }
+}
+
+fn parse_query(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        Err("query must contain non-whitespace characters".to_owned())
+    } else {
+        Ok(value.to_owned())
     }
 }
 
@@ -124,10 +146,26 @@ mod tests {
     }
 
     #[test]
-    fn no_cache_takes_precedence_over_reindex() {
-        let cli = Cli::try_parse_from(["visiongrep", "robot", "photos", "--reindex", "--no-cache"])
-            .unwrap();
+    fn reindex_conflicts_with_no_cache() {
+        assert!(
+            Cli::try_parse_from(["visiongrep", "robot", "photos", "--reindex", "--no-cache",])
+                .is_err()
+        );
+    }
 
-        assert_eq!(cli.into_command().request.cache_mode(), CacheMode::Disabled);
+    #[test]
+    fn blank_query_is_rejected() {
+        assert!(Cli::try_parse_from(["visiongrep", "   ", "photos"]).is_err());
+    }
+
+    #[test]
+    fn null_output_is_accepted_with_paths_only() {
+        let cli =
+            Cli::try_parse_from(["visiongrep", "robot", "photos", "--paths-only", "-0"]).unwrap();
+
+        assert!(matches!(
+            cli.into_command().output_format,
+            OutputFormat::PathsNull
+        ));
     }
 }

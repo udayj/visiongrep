@@ -30,12 +30,25 @@ fn run() -> Result<ExitStatus, VisionGrepError> {
     let command = Cli::parse().into_command();
     let mut terminal = Terminal::new(command.output_format, command.quiet);
     let results = search(&command.request, &mut |event| terminal.handle_event(event))?;
-    terminal.write_results(&results)?;
+    let status = ExitStatus::from_has_matches(!results.is_empty());
 
-    Ok(ExitStatus::from_has_matches(!results.is_empty()))
+    preserve_status_on_broken_pipe(status, terminal.write_results(&results))
 }
 
-#[derive(Debug, Clone, Copy)]
+/// A downstream reader closing early is successful pipeline behavior, but it must not change
+/// whether the completed search found a match.
+fn preserve_status_on_broken_pipe(
+    status: ExitStatus,
+    output: Result<(), VisionGrepError>,
+) -> Result<ExitStatus, VisionGrepError> {
+    match output {
+        Ok(()) => Ok(status),
+        Err(error) if error.is_broken_pipe() => Ok(status),
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExitStatus {
     Found,
     NoMatches,
@@ -57,5 +70,41 @@ impl ExitStatus {
             Self::NoMatches => 1,
             Self::OperationalError => 2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::*;
+
+    fn broken_pipe() -> Result<(), VisionGrepError> {
+        Err(VisionGrepError::Io(io::Error::from(
+            io::ErrorKind::BrokenPipe,
+        )))
+    }
+
+    #[test]
+    fn broken_pipe_preserves_no_match_status() {
+        assert_eq!(
+            preserve_status_on_broken_pipe(ExitStatus::NoMatches, broken_pipe()).unwrap(),
+            ExitStatus::NoMatches
+        );
+    }
+
+    #[test]
+    fn broken_pipe_preserves_found_status() {
+        assert_eq!(
+            preserve_status_on_broken_pipe(ExitStatus::Found, broken_pipe()).unwrap(),
+            ExitStatus::Found
+        );
+    }
+
+    #[test]
+    fn other_output_errors_are_not_suppressed() {
+        let error = VisionGrepError::Io(io::Error::other("injected output failure"));
+
+        assert!(preserve_status_on_broken_pipe(ExitStatus::Found, Err(error)).is_err());
     }
 }

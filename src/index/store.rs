@@ -1,40 +1,57 @@
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
+use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
+use crate::embedding::NormalizedEmbedding;
 use crate::error::VisionGrepError;
 
 use super::scan::ImageFile;
 
-const EMBEDDING_CACHE_VERSION: i64 = 1;
+const EMBEDDING_CACHE_VERSION: i64 = 2;
+const INDEX_FILE_NAME: &str = ".visiongrep.db";
+const REINDEX_FILE_PREFIX: &str = ".visiongrep.db.reindex-";
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImageRecord {
     pub(crate) path: PathBuf,
-    pub(crate) embedding: Vec<f32>,
+    pub(crate) embedding: NormalizedEmbedding,
+}
+
+pub(super) enum ImageUpdate {
+    Upsert {
+        file: ImageFile,
+        embedding: NormalizedEmbedding,
+    },
+    Delete {
+        relative_path: PathBuf,
+    },
 }
 
 pub(crate) struct ImageIndex {
     conn: Connection,
 }
 
+/// A complete replacement index that remains invisible until it is verified and installed.
+///
+/// The temporary file lives beside the active database, so installing it is a same-filesystem
+/// rename. Dropping this value after any build error removes the staged database and leaves the
+/// active index untouched.
+pub(crate) struct StagedImageIndex {
+    index: ImageIndex,
+    temporary: NamedTempFile,
+    destination: PathBuf,
+}
+
 impl ImageIndex {
     pub(crate) fn open(root: &Path) -> Result<Self, VisionGrepError> {
-        let db_path = root.join(".visiongrep.db");
-        let conn = Connection::open(db_path)?;
+        let conn = Connection::open(root.join(INDEX_FILE_NAME))?;
         Self::from_connection(conn)
-    }
-
-    pub(crate) fn reindex(root: &Path) -> Result<Self, VisionGrepError> {
-        let db_path = root.join(".visiongrep.db");
-        if db_path.exists() {
-            fs::remove_file(&db_path)?;
-        }
-        Self::open(root)
     }
 
     #[cfg(test)]
@@ -58,7 +75,7 @@ impl ImageIndex {
 
         for file in files {
             let cached: Option<(i64, i64)> = stmt
-                .query_row([file.path.as_os_str().as_bytes()], |row| {
+                .query_row([file.relative_path.as_os_str().as_bytes()], |row| {
                     Ok((row.get(0)?, row.get(1)?))
                 })
                 .optional()?;
@@ -78,7 +95,7 @@ impl ImageIndex {
     ) -> Result<(), VisionGrepError> {
         let current_paths = files
             .iter()
-            .map(|file| file.path.as_os_str().as_bytes().to_vec())
+            .map(|file| file.relative_path.as_os_str().as_bytes().to_vec())
             .collect::<HashSet<_>>();
         let cached_paths = {
             let mut stmt = self.conn.prepare("SELECT path FROM images")?;
@@ -101,43 +118,46 @@ impl ImageIndex {
         Ok(())
     }
 
-    pub(crate) fn remove_entries(&mut self, files: &[ImageFile]) -> Result<(), VisionGrepError> {
+    pub(super) fn apply_updates(
+        &mut self,
+        updates: Vec<ImageUpdate>,
+    ) -> Result<(), VisionGrepError> {
         let transaction = self.conn.transaction()?;
         {
-            let mut stmt = transaction.prepare("DELETE FROM images WHERE path = ?1")?;
-            for file in files {
-                stmt.execute([file.path.as_os_str().as_bytes()])?;
+            let mut upsert = transaction.prepare(
+                "INSERT INTO images (path, mtime_ns, size, embedding)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(path) DO UPDATE SET
+                   mtime_ns = excluded.mtime_ns,
+                   size = excluded.size,
+                   embedding = excluded.embedding",
+            )?;
+            let mut delete = transaction.prepare("DELETE FROM images WHERE path = ?1")?;
+            for update in updates {
+                match update {
+                    ImageUpdate::Upsert { file, embedding } => {
+                        upsert.execute(params![
+                            file.relative_path.as_os_str().as_bytes(),
+                            file.mtime_ns,
+                            file.size,
+                            embedding.to_le_bytes(),
+                        ])?;
+                    }
+                    ImageUpdate::Delete { relative_path } => {
+                        delete.execute([relative_path.as_os_str().as_bytes()])?;
+                    }
+                }
             }
         }
         transaction.commit()?;
         Ok(())
     }
 
-    pub(crate) fn upsert_embedding(
-        &mut self,
-        file: &ImageFile,
-        embedding: &[f32],
-    ) -> Result<(), VisionGrepError> {
-        let bytes = embedding_to_bytes(embedding);
-        self.conn.execute(
-            "INSERT INTO images (path, mtime_ns, size, embedding)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(path) DO UPDATE SET
-               mtime_ns = excluded.mtime_ns,
-               size = excluded.size,
-               embedding = excluded.embedding",
-            params![
-                file.path.as_os_str().as_bytes(),
-                file.mtime_ns,
-                file.size,
-                bytes
-            ],
-        )?;
-        Ok(())
-    }
-
     /// Loads image embeddings while restoring exact native Unix path bytes and validating blobs.
-    pub(crate) fn all_embeddings(&self) -> Result<Vec<ImageRecord>, VisionGrepError> {
+    pub(crate) fn all_embeddings(
+        &self,
+        display_root: &Path,
+    ) -> Result<Vec<ImageRecord>, VisionGrepError> {
         let mut stmt = self
             .conn
             .prepare("SELECT path, embedding FROM images ORDER BY path")?;
@@ -151,15 +171,24 @@ impl ImageIndex {
 
         records
             .into_iter()
-            .map(|(path, bytes)| {
-                let embedding = bytes_to_embedding(&path, &bytes)?;
+            .map(|(relative_path, bytes)| {
+                let path = display_root.join(relative_path);
+                let embedding = NormalizedEmbedding::from_le_bytes(&bytes).map_err(|source| {
+                    VisionGrepError::InvalidCachedImageEmbedding {
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
                 Ok(ImageRecord { path, embedding })
             })
             .collect()
     }
 
     /// Looks up a query by exact text; case and whitespace differences are distinct cache keys.
-    pub(crate) fn query_embedding(&self, query: &str) -> Result<Option<Vec<f32>>, VisionGrepError> {
+    pub(crate) fn query_embedding(
+        &self,
+        query: &str,
+    ) -> Result<Option<NormalizedEmbedding>, VisionGrepError> {
         let bytes = self
             .conn
             .query_row(
@@ -170,26 +199,29 @@ impl ImageIndex {
             .optional()?;
 
         bytes
-            .map(|bytes| bytes_to_query_embedding(&bytes))
+            .map(|bytes| {
+                NormalizedEmbedding::from_le_bytes(&bytes)
+                    .map_err(|source| VisionGrepError::InvalidCachedQueryEmbedding { source })
+            })
             .transpose()
     }
 
     pub(crate) fn upsert_query_embedding(
         &mut self,
         query: &str,
-        embedding: &[f32],
+        embedding: &NormalizedEmbedding,
     ) -> Result<(), VisionGrepError> {
-        let bytes = embedding_to_bytes(embedding);
         self.conn.execute(
             "INSERT INTO queries (query, embedding)
              VALUES (?1, ?2)
              ON CONFLICT(query) DO UPDATE SET embedding = excluded.embedding",
-            params![query, bytes],
+            params![query, embedding.to_le_bytes()],
         )?;
         Ok(())
     }
 
     fn from_connection(conn: Connection) -> Result<Self, VisionGrepError> {
+        conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
         let mut index = Self { conn };
         index.init()?;
         Ok(index)
@@ -222,11 +254,11 @@ impl ImageIndex {
                 path       BLOB PRIMARY KEY,
                 mtime_ns   INTEGER NOT NULL,
                 size       INTEGER NOT NULL,
-                embedding  BLOB NOT NULL
+                embedding  BLOB NOT NULL CHECK(length(embedding) = 2048)
             );
              CREATE TABLE IF NOT EXISTS queries (
                 query      TEXT PRIMARY KEY,
-                embedding  BLOB NOT NULL
+                embedding  BLOB NOT NULL CHECK(length(embedding) = 2048)
             );",
         )?;
         if version < EMBEDDING_CACHE_VERSION {
@@ -235,65 +267,112 @@ impl ImageIndex {
         transaction.commit()?;
         Ok(())
     }
+
+    fn close(self) -> Result<(), VisionGrepError> {
+        self.conn
+            .close()
+            .map_err(|(_, source)| VisionGrepError::Index(source))
+    }
 }
 
-/// Encodes floats explicitly as little-endian bytes to make the SQLite representation deliberate.
-fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(embedding));
-    for value in embedding {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
-}
+impl StagedImageIndex {
+    pub(crate) fn create(root: &Path) -> Result<Self, VisionGrepError> {
+        let temporary = TempFileBuilder::new()
+            .prefix(REINDEX_FILE_PREFIX)
+            .tempfile_in(root)
+            .map_err(|source| VisionGrepError::IndexFile {
+                operation: "creating staged reindex",
+                path: root.to_owned(),
+                source,
+            })?;
+        let conn = Connection::open(temporary.path())?;
+        let index = ImageIndex::from_connection(conn)?;
 
-/// Decodes a stored image vector after validating byte alignment and finite values.
-fn bytes_to_embedding(path: &Path, bytes: &[u8]) -> Result<Vec<f32>, VisionGrepError> {
-    if bytes.len() % std::mem::size_of::<f32>() != 0 {
-        return Err(VisionGrepError::InvalidEmbeddingBlob {
-            path: path.to_owned(),
-            len: bytes.len(),
-        });
-    }
-
-    let embedding = decode_embedding(bytes);
-    if embedding.iter().any(|value| !value.is_finite()) {
-        return Err(VisionGrepError::NonFiniteEmbedding {
-            path: path.to_owned(),
-        });
-    }
-    Ok(embedding)
-}
-
-fn bytes_to_query_embedding(bytes: &[u8]) -> Result<Vec<f32>, VisionGrepError> {
-    if bytes.len() % std::mem::size_of::<f32>() != 0 {
-        return Err(VisionGrepError::InvalidQueryEmbeddingBlob { len: bytes.len() });
+        Ok(Self {
+            index,
+            temporary,
+            destination: root.join(INDEX_FILE_NAME),
+        })
     }
 
-    let embedding = decode_embedding(bytes);
-    if embedding.iter().any(|value| !value.is_finite()) {
-        return Err(VisionGrepError::NonFiniteQueryEmbedding);
+    pub(crate) fn index_mut(&mut self) -> &mut ImageIndex {
+        &mut self.index
     }
-    Ok(embedding)
-}
 
-fn decode_embedding(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(std::mem::size_of::<f32>())
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect()
+    /// Verifies the completed database before making it visible at the active index path.
+    pub(crate) fn install(self) -> Result<(), VisionGrepError> {
+        let Self {
+            index,
+            temporary,
+            destination,
+        } = self;
+        let check = index
+            .conn
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))?;
+        if check != "ok" {
+            return Err(VisionGrepError::IndexIntegrity {
+                path: temporary.path().to_owned(),
+                detail: check,
+            });
+        }
+
+        // Reading through the typed API also validates every persisted embedding blob.
+        index.all_embeddings(Path::new(""))?;
+        index.close()?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|source| VisionGrepError::IndexFile {
+                operation: "syncing staged reindex",
+                path: temporary.path().to_owned(),
+                source,
+            })?;
+        temporary
+            .persist(&destination)
+            .map_err(|error| VisionGrepError::IndexFile {
+                operation: "installing staged reindex",
+                path: destination.clone(),
+                source: error.error,
+            })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn embedding() -> NormalizedEmbedding {
+        let mut values = vec![0.0; crate::embedding::EMBEDDING_DIM];
+        values[0] = 0.6;
+        values[1] = 0.8;
+        NormalizedEmbedding::from_model_output(values).unwrap()
+    }
+
+    fn image_file(path: PathBuf) -> ImageFile {
+        ImageFile {
+            relative_path: path,
+            mtime_ns: 10,
+            size: 20,
+        }
+    }
+
+    fn insert(index: &mut ImageIndex, file: &ImageFile) {
+        index
+            .apply_updates(vec![ImageUpdate::Upsert {
+                file: file.clone(),
+                embedding: embedding(),
+            }])
+            .unwrap();
+    }
+
     #[test]
     fn embedding_round_trips_through_bytes() {
-        let embedding = vec![0.1, -0.2, 0.3];
-        let bytes = embedding_to_bytes(&embedding);
+        let embedding = embedding();
+        let bytes = embedding.to_le_bytes();
 
         assert_eq!(
-            bytes_to_embedding(Path::new("image.jpg"), &bytes).unwrap(),
+            NormalizedEmbedding::from_le_bytes(&bytes).unwrap(),
             embedding
         );
     }
@@ -301,41 +380,29 @@ mod tests {
     #[test]
     fn index_round_trips_embeddings() {
         let mut index = ImageIndex::in_memory().unwrap();
-        let file = ImageFile {
-            path: PathBuf::from("image.jpg"),
-            mtime_ns: 10,
-            size: 20,
-        };
+        let file = image_file(PathBuf::from("image.jpg"));
 
-        index.upsert_embedding(&file, &[0.6, 0.8]).unwrap();
+        insert(&mut index, &file);
 
-        let records = index.all_embeddings().unwrap();
+        let records = index.all_embeddings(Path::new("photos")).unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].path, PathBuf::from("image.jpg"));
-        assert_eq!(records[0].embedding, vec![0.6, 0.8]);
+        assert_eq!(records[0].path, PathBuf::from("photos/image.jpg"));
+        assert_eq!(records[0].embedding, embedding());
         assert!(index.images_needing_embedding(&[file]).unwrap().is_empty());
     }
 
     #[test]
     fn removes_entries_for_renamed_or_deleted_images() {
         let mut index = ImageIndex::in_memory().unwrap();
-        let old_file = ImageFile {
-            path: PathBuf::from("old-name.jpg"),
-            mtime_ns: 10,
-            size: 20,
-        };
-        let renamed_file = ImageFile {
-            path: PathBuf::from("new-name.jpg"),
-            mtime_ns: 10,
-            size: 20,
-        };
+        let old_file = image_file(PathBuf::from("old-name.jpg"));
+        let renamed_file = image_file(PathBuf::from("new-name.jpg"));
 
-        index.upsert_embedding(&old_file, &[0.6, 0.8]).unwrap();
+        insert(&mut index, &old_file);
         index
             .remove_stale_entries(std::slice::from_ref(&renamed_file))
             .unwrap();
 
-        assert!(index.all_embeddings().unwrap().is_empty());
+        assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
         assert_eq!(
             index
                 .images_needing_embedding(&[renamed_file])
@@ -350,13 +417,14 @@ mod tests {
         let mut index = ImageIndex::in_memory().unwrap();
 
         assert!(index.query_embedding("cable drums").unwrap().is_none());
+        let embedding = embedding();
         index
-            .upsert_query_embedding("cable drums", &[0.6, 0.8])
+            .upsert_query_embedding("cable drums", &embedding)
             .unwrap();
 
         assert_eq!(
             index.query_embedding("cable drums").unwrap(),
-            Some(vec![0.6, 0.8])
+            Some(embedding)
         );
     }
 
@@ -376,7 +444,7 @@ mod tests {
 
         let index = ImageIndex::from_connection(conn).unwrap();
 
-        assert!(index.all_embeddings().unwrap().is_empty());
+        assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
         let version = index
             .conn
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
@@ -390,14 +458,146 @@ mod tests {
         let path = PathBuf::from(OsString::from_vec(vec![
             b'i', b'm', b'g', 0xff, b'.', b'j', b'p', b'g',
         ]));
-        let file = ImageFile {
-            path: path.clone(),
-            mtime_ns: 10,
-            size: 20,
-        };
+        let file = image_file(path.clone());
 
-        index.upsert_embedding(&file, &[0.6, 0.8]).unwrap();
+        insert(&mut index, &file);
 
-        assert_eq!(index.all_embeddings().unwrap()[0].path, path);
+        assert_eq!(index.all_embeddings(Path::new("")).unwrap()[0].path, path);
+    }
+
+    #[test]
+    fn invalid_cached_embedding_is_rejected() {
+        let index = ImageIndex::in_memory().unwrap();
+        index
+            .conn
+            .execute(
+                "INSERT INTO images (path, mtime_ns, size, embedding) VALUES (?1, 10, 20, ?2)",
+                params![b"bad.jpg", vec![0_u8; 2048]],
+            )
+            .unwrap();
+
+        let error = index.all_embeddings(Path::new("")).unwrap_err();
+
+        assert!(matches!(
+            error,
+            VisionGrepError::InvalidCachedImageEmbedding { .. }
+        ));
+    }
+
+    #[test]
+    fn update_batch_is_atomic() {
+        let mut index = ImageIndex::in_memory().unwrap();
+        index
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_bad_image
+                 BEFORE INSERT ON images
+                 WHEN NEW.path = X'6261642E6A7067'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'rejected test image');
+                 END;",
+            )
+            .unwrap();
+        let good = image_file(PathBuf::from("good.jpg"));
+        let bad = image_file(PathBuf::from("bad.jpg"));
+
+        assert!(
+            index
+                .apply_updates(vec![
+                    ImageUpdate::Upsert {
+                        file: good,
+                        embedding: embedding(),
+                    },
+                    ImageUpdate::Upsert {
+                        file: bad,
+                        embedding: embedding(),
+                    },
+                ])
+                .is_err()
+        );
+        assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_staged_reindex_preserves_the_complete_active_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let original_file = image_file(PathBuf::from("original.jpg"));
+        let original_query = embedding();
+        {
+            let mut original = ImageIndex::open(directory.path()).unwrap();
+            insert(&mut original, &original_file);
+            original
+                .upsert_query_embedding("cached query", &original_query)
+                .unwrap();
+        }
+
+        let mut staged = StagedImageIndex::create(directory.path()).unwrap();
+        let first_batch = (0..super::super::ingest::INDEX_BATCH_SIZE)
+            .map(|number| ImageUpdate::Upsert {
+                file: image_file(PathBuf::from(format!("staged-{number}.jpg"))),
+                embedding: embedding(),
+            })
+            .collect();
+        staged.index_mut().apply_updates(first_batch).unwrap();
+
+        // A reader opening the active path during the rebuild still sees the complete old index.
+        let concurrent_reader = ImageIndex::open(directory.path()).unwrap();
+        assert_eq!(
+            concurrent_reader
+                .all_embeddings(Path::new(""))
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(concurrent_reader);
+
+        staged
+            .index_mut()
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER reject_later_batch
+                 BEFORE INSERT ON images
+                 WHEN NEW.path = X'6661696C2E6A7067'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected later-batch failure');
+                 END;",
+            )
+            .unwrap();
+        let later_batch = vec![ImageUpdate::Upsert {
+            file: image_file(PathBuf::from("fail.jpg")),
+            embedding: embedding(),
+        }];
+
+        assert!(staged.index_mut().apply_updates(later_batch).is_err());
+        drop(staged);
+
+        let original = ImageIndex::open(directory.path()).unwrap();
+        let records = original.all_embeddings(Path::new("")).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, original_file.relative_path);
+        assert_eq!(
+            original.query_embedding("cached query").unwrap(),
+            Some(original_query)
+        );
+    }
+
+    #[test]
+    fn completed_staged_reindex_replaces_the_active_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let old_file = image_file(PathBuf::from("old.jpg"));
+        {
+            let mut original = ImageIndex::open(directory.path()).unwrap();
+            insert(&mut original, &old_file);
+        }
+
+        let new_file = image_file(PathBuf::from("new.jpg"));
+        let mut staged = StagedImageIndex::create(directory.path()).unwrap();
+        insert(staged.index_mut(), &new_file);
+        staged.install().unwrap();
+        let installed = ImageIndex::open(directory.path()).unwrap();
+
+        let records = installed.all_embeddings(Path::new("")).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, new_file.relative_path);
     }
 }

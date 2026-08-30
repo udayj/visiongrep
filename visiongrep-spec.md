@@ -71,6 +71,8 @@ indicatif = "0.17"               # progress bars
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"                   # artifact checksums
+tempfile = "3"                  # unique same-directory artifact downloads
 walkdir = "2"                    # recursive directory traversal
 ```
 
@@ -80,7 +82,7 @@ No `torch`. No `transformers`. No Python interop.
 
 ## Models
 
-Two ONNX files, downloaded on first run:
+Two pinned ONNX files, downloaded on first run:
 
 | File | Source | Size |
 |---|---|---|
@@ -89,7 +91,9 @@ Two ONNX files, downloaded on first run:
 
 Download destination: `~/.cache/visiongrep/models/`
 
-Both files are checksummed after download (SHA256). If the checksum fails, re-download. If the cache directory already contains valid files, skip download silently.
+The model URLs use immutable Hugging Face revisions. Both models and the matching tokenizer are
+verified with pinned SHA-256 checksums before atomic installation. If the cache directory already
+contains valid files, skip download silently.
 
 The matching `tokenizer.json` is downloaded alongside the text model. Model artifacts live in
 `~/.cache/visiongrep/models/`, outside the searched folder.
@@ -110,6 +114,7 @@ Options:
   -t, --threshold <F>    Minimum raw CLIP cosine similarity -1.0–1.0 [default: 0.25]
   --json                 Output results as JSON
   --paths-only           Output only matching paths, one per line
+  -0, --null             Output exact paths separated by NUL bytes
   --reindex              Force re-embedding of all images, ignoring cache
   --no-cache             Skip reading and writing the index cache
   -q, --quiet            Suppress progress output (useful in scripts)
@@ -126,7 +131,8 @@ score  path
 0.261  /photos/misc/scan003.jpg
 ```
 
-Tab-separated, score to 3 decimal places, sorted descending. No header when `--quiet` is set.
+Tab-separated, score to 3 decimal places, sorted descending. Tabs, newlines, backslashes, and
+control characters in paths are escaped. No header when `--quiet` is set.
 `--json` and `--paths-only` are mutually exclusive. If both are passed, return a CLI error.
 
 ### JSON output (`--json`)
@@ -138,12 +144,18 @@ Tab-separated, score to 3 decimal places, sorted descending. No header when `--q
 ]
 ```
 
+JSON requires UTF-8 paths. A non-UTF-8 result path produces a clear operational error rather than
+lossy output.
+
 ### Paths-only output (`--paths-only`)
 
 ```
 /photos/street/img_0042.jpg
 /photos/travel/rome_01.png
 ```
+
+Use `-0` / `--null` for exact native path bytes separated by NUL. This is the safe format for paths
+that may contain newlines or other record-separator characters.
 
 Exit code 0 if any results found above threshold, 1 if no matches, 2 on error.
 
@@ -165,19 +177,19 @@ Schema (keep it minimal):
 
 ```sql
 CREATE TABLE images (
-  path       BLOB PRIMARY KEY, -- native Unix path bytes; non-UTF-8 paths are preserved
+  path       BLOB PRIMARY KEY, -- root-relative native Unix path bytes
   mtime_ns   INTEGER NOT NULL,
   size       INTEGER NOT NULL,
-  embedding  BLOB NOT NULL    -- f32 array, little-endian
+  embedding  BLOB NOT NULL CHECK(length(embedding) = 2048) -- 512 little-endian f32 values
 );
 
 CREATE TABLE queries (
   query      TEXT PRIMARY KEY,
-  embedding  BLOB NOT NULL
+  embedding  BLOB NOT NULL CHECK(length(embedding) = 2048)
 );
 ```
 
-Embeddings are stored as raw bytes (cast from `&[f32]`). No compression. No external vector DB.
+Embeddings are stored as explicit little-endian bytes. No compression. No external vector DB.
 
 SQLite `user_version` identifies the embedding contract. Any model, tokenizer, output, or image
 preprocessing change that could alter vectors must increment this version. Older incompatible
@@ -189,8 +201,11 @@ loads neither ONNX model: the command reads cached image/query vectors and perfo
 Novel queries load only the text model. New or changed images load only the vision model unless the
 query is also novel.
 
-`--reindex` deletes and rebuilds the `.visiongrep.db` file.
+`--reindex` builds and verifies a unique sibling database using bounded write transactions, then
+atomically replaces the active index. A failed rebuild leaves the previous image and query caches
+untouched, and concurrent readers see either the previous complete index or the replacement.
 `--no-cache` skips reading and writing entirely — embeds everything fresh each run. Useful for scripting against small folders.
+The two flags are mutually exclusive.
 
 ---
 
@@ -198,7 +213,8 @@ query is also novel.
 
 ### Image embedding
 
-1. Read dimensions before allocating the decoded image; skip images over 100 MP or 512 MiB decoded
+1. Read dimensions before allocating the decoded image; skip zero-sized images, images over 100 MP,
+   or images whose estimated peak working memory exceeds 512 MiB
 2. Decode with `image` and apply EXIF orientation
 3. Convert to RGB
 4. Take the centered square crop without stretching the image
@@ -214,7 +230,8 @@ their geometry.
 
 ### Text embedding
 
-1. Tokenize query using the matching downloaded `tokenizer.json` (BPE, max 77 tokens, pad/truncate)
+1. Tokenize with the matching `tokenizer.json`: include special tokens, truncate to 77 positions,
+   and right-pad to 77 with ID `1`, token `<|endoftext|>`, and attention-mask value `0`
 2. Run through `clip_text.onnx` — input `input_ids [1, 77]` and `attention_mask [1, 77]`, output `[1, 512]`
 3. L2-normalize the output vector
 
@@ -291,6 +308,7 @@ Release notes and README benchmarks should report:
 - Checksum mismatch: delete partial file, exit with message
 - Permission error on cache dir: exit with a typed error; never silently change persistence behavior
 - ORT session failure: exit with error message and suggest filing an issue
+- Downstream pipe closure: terminate normally without printing an operational error
 
 No panics in release builds. All errors use a single `VisionGrepError` enum in `error.rs`:
 

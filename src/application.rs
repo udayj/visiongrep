@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::embedding::embed_text;
 use crate::error::VisionGrepError;
 use crate::index::{
-    ImageFile, ImageIndex, IngestEvent, discover_images, embed_images, embed_into_index,
+    ImageFile, ImageIndex, IngestEvent, SearchRoot, StagedImageIndex, discover_images,
+    embed_images, ingest_into_index,
 };
 use crate::model::{
     ArtifactEvent, ModelPaths, TextSession, VisionSession, ensure_text_artifacts,
@@ -42,11 +43,6 @@ impl SearchRequest {
             cache_mode,
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn cache_mode(&self) -> CacheMode {
-        self.cache_mode
-    }
 }
 
 pub(crate) enum SearchEvent {
@@ -60,18 +56,16 @@ pub(crate) fn search(
     on_event: &mut impl FnMut(SearchEvent),
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
     validate_search_path(&request.path)?;
-    let files = discover_images(&request.path)?;
+    let root = SearchRoot::resolve(&request.path)?;
+    let files = discover_images(&root)?;
 
     match request.cache_mode {
-        CacheMode::Disabled => search_without_cache(&files, request, on_event),
+        CacheMode::Disabled => search_without_cache(&root, &files, request, on_event),
         CacheMode::Use => {
-            let index = ImageIndex::open(&request.path)?;
-            search_with_cache(&files, request, index, on_event)
+            let index = ImageIndex::open(root.filesystem_path())?;
+            search_with_cache(&root, &files, request, index, on_event)
         }
-        CacheMode::Reindex => {
-            let index = ImageIndex::reindex(&request.path)?;
-            search_with_cache(&files, request, index, on_event)
-        }
+        CacheMode::Reindex => reindex_and_search(&root, &files, request, on_event),
     }
 }
 
@@ -80,6 +74,7 @@ pub(crate) fn search(
 /// Model initialization is deferred until an image is present, and the text model is not loaded
 /// unless at least one image was embedded successfully.
 fn search_without_cache(
+    root: &SearchRoot,
     files: &[ImageFile],
     request: &SearchRequest,
     on_event: &mut impl FnMut(SearchEvent),
@@ -91,7 +86,7 @@ fn search_without_cache(
     let paths = model_paths()?;
     ensure_vision(&paths, on_event)?;
     let mut vision = VisionSession::load(&paths)?;
-    let image_records = embed_images(files, &mut vision, &mut |event| {
+    let image_records = embed_images(root, files, &mut vision, &mut |event| {
         on_event(SearchEvent::Index(event));
     })?;
     if image_records.is_empty() {
@@ -101,7 +96,7 @@ fn search_without_cache(
     ensure_text(&paths, on_event)?;
     let mut text = TextSession::load(&paths)?;
     let query_embedding = embed_text(&request.query, &mut text)?;
-    Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records)
+    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records))
 }
 
 /// Reconciles the on-disk index and loads only the model sessions required by the current state.
@@ -109,6 +104,7 @@ fn search_without_cache(
 /// An unchanged directory plus an exact cached query needs no ONNX session. Changed images require
 /// only the vision session, while a novel query requires only the text session.
 fn search_with_cache(
+    root: &SearchRoot,
     files: &[ImageFile],
     request: &SearchRequest,
     mut index: ImageIndex,
@@ -117,17 +113,57 @@ fn search_with_cache(
     index.remove_stale_entries(files)?;
     let missing = index.images_needing_embedding(files)?;
     if !missing.is_empty() {
-        // A changed file must not retain its previous embedding if decoding now fails.
-        index.remove_entries(&missing)?;
         let paths = model_paths()?;
         ensure_vision(&paths, on_event)?;
         let mut vision = VisionSession::load(&paths)?;
-        embed_into_index(&mut index, &missing, &mut vision, &mut |event| {
+        ingest_into_index(root, &mut index, &missing, &mut vision, &mut |event| {
             on_event(SearchEvent::Index(event));
         })?;
     }
 
-    let image_records = index.all_embeddings()?;
+    search_index(root, request, &mut index, on_event)
+}
+
+/// Builds a complete sibling database and exposes it only after every image was processed.
+fn reindex_and_search(
+    root: &SearchRoot,
+    files: &[ImageFile],
+    request: &SearchRequest,
+    on_event: &mut impl FnMut(SearchEvent),
+) -> Result<Vec<SearchResult>, VisionGrepError> {
+    // Opening the active database first lets SQLite recover any hot journal before its main file is
+    // eventually replaced. The connection is kept alive while the sibling index is constructed.
+    let active_index = ImageIndex::open(root.filesystem_path())?;
+    let mut vision = if files.is_empty() {
+        None
+    } else {
+        let paths = model_paths()?;
+        ensure_vision(&paths, on_event)?;
+        Some(VisionSession::load(&paths)?)
+    };
+    let mut staged = StagedImageIndex::create(root.filesystem_path())?;
+
+    if let Some(vision) = &mut vision {
+        ingest_into_index(root, staged.index_mut(), files, vision, &mut |event| {
+            on_event(SearchEvent::Index(event));
+        })?;
+    }
+
+    // Finish all fallible model work against the staged database. Once installation starts, the
+    // rebuild is complete and this invocation no longer needs to reopen the replacement.
+    let results = search_index(root, request, staged.index_mut(), on_event)?;
+    drop(active_index);
+    staged.install()?;
+    Ok(results)
+}
+
+fn search_index(
+    root: &SearchRoot,
+    request: &SearchRequest,
+    index: &mut ImageIndex,
+    on_event: &mut impl FnMut(SearchEvent),
+) -> Result<Vec<SearchResult>, VisionGrepError> {
+    let image_records = index.all_embeddings(root.display_path())?;
     if image_records.is_empty() {
         return Ok(Vec::new());
     }
@@ -144,7 +180,7 @@ fn search_with_cache(
         }
     };
 
-    Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records)
+    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records))
 }
 
 fn ensure_vision(
