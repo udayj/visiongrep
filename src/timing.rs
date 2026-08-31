@@ -147,14 +147,14 @@ impl TimingRecorder {
         Self::new(false, model)
     }
 
-    pub(crate) fn start(&self) -> Instant {
-        Instant::now()
+    pub(crate) fn start(&self) -> Option<Instant> {
+        self.enabled.then(Instant::now)
     }
 
-    pub(crate) fn record(&mut self, phase: Phase, started: Instant) {
-        if !self.enabled {
+    pub(crate) fn record(&mut self, phase: Phase, started: Option<Instant>) {
+        let Some(started) = started else {
             return;
-        }
+        };
 
         let measurement = self.phases.entry(phase).or_default();
         measurement.elapsed += started.elapsed();
