@@ -16,9 +16,6 @@ on:
         type: boolean
         required: true
         default: true
-  push:
-    branches: [codex/retrieval-performance-foundation]
-    paths: [.github/heavy-benchmark-trigger]
 
 permissions:
   contents: read

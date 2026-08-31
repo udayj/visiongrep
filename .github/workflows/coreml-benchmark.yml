@@ -11,9 +11,6 @@ on:
         description: End-to-end repetitions
         required: true
         default: "5"
-  push:
-    branches: [codex/retrieval-performance-foundation]
-    paths: [.github/benchmark-trigger]
 
 permissions:
   contents: read

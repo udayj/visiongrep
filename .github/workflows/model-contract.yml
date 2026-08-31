@@ -4,9 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "17 3 * * 1"
-  push:
-    branches: [codex/retrieval-performance-foundation]
-    paths: [.github/benchmark-trigger]
 
 permissions:
   contents: read
