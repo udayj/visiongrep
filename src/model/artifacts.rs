@@ -178,11 +178,12 @@ fn ensure_artifact(
     timing: &mut TimingRecorder,
     verification: ArtifactVerification,
 ) -> Result<(), VisionGrepError> {
+    let validation_started = timing.start();
     if verification == ArtifactVerification::Fast && verified_manifest_matches(spec, destination)? {
+        timing.record(Phase::ArtifactValidation, validation_started);
         return Ok(());
     }
 
-    let validation_started = timing.start();
     let valid = if destination.exists() {
         validate_artifact(spec, destination)?
     } else {
