@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use super::terminal::OutputFormat;
-use crate::application::{CacheMode, SearchRequest};
+use crate::application::{ArtifactVerification, CacheMode, SearchRequest};
 use crate::ranking::DEFAULT_SIMILARITY_THRESHOLD;
 use crate::timing::TimingDestination;
 
@@ -57,6 +57,12 @@ pub(crate) struct Cli {
     quiet: bool,
 
     #[arg(
+        long = "verify-models",
+        help = "Fully re-hash each model artifact required by this search"
+    )]
+    verify_models: bool,
+
+    #[arg(
         long = "timing",
         help = "Write one machine-readable phase timing report to stderr"
     )]
@@ -104,6 +110,11 @@ impl Cli {
                 self.top,
                 self.threshold,
                 cache_mode,
+                if self.verify_models {
+                    ArtifactVerification::Full
+                } else {
+                    ArtifactVerification::Fast
+                },
             ),
             output_format,
             quiet: self.quiet,

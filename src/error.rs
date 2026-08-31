@@ -42,6 +42,20 @@ pub(crate) enum VisionGrepError {
         actual: String,
     },
 
+    #[error("artifact size mismatch for {file}: expected {expected} bytes, got {actual}")]
+    ArtifactSize {
+        file: PathBuf,
+        expected: u64,
+        actual: u64,
+    },
+
+    #[error("failed to serialize verified artifact manifest at {path}: {source}")]
+    ArtifactManifestSerialize {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
     #[error("artifact destination has no parent directory: {path}")]
     ArtifactDestinationWithoutParent { path: PathBuf },
 

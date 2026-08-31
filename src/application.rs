@@ -20,12 +20,19 @@ pub(crate) enum CacheMode {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArtifactVerification {
+    Fast,
+    Full,
+}
+
 pub(crate) struct SearchRequest {
     query: String,
     path: PathBuf,
     top: usize,
     threshold: f32,
     cache_mode: CacheMode,
+    artifact_verification: ArtifactVerification,
 }
 
 impl SearchRequest {
@@ -35,6 +42,7 @@ impl SearchRequest {
         top: usize,
         threshold: f32,
         cache_mode: CacheMode,
+        artifact_verification: ArtifactVerification,
     ) -> Self {
         Self {
             query,
@@ -42,6 +50,7 @@ impl SearchRequest {
             top,
             threshold,
             cache_mode,
+            artifact_verification,
         }
     }
 }
@@ -107,7 +116,7 @@ fn search_without_cache(
     }
 
     let paths = model_paths()?;
-    ensure_vision(&paths, on_event, timing)?;
+    ensure_vision(&paths, request.artifact_verification, on_event, timing)?;
     let session_started = timing.start();
     let mut vision = VisionSession::load(&paths)?;
     timing.record(Phase::ModelSessionConstruction, session_started);
@@ -124,7 +133,7 @@ fn search_without_cache(
         return Ok(Vec::new());
     }
 
-    ensure_text(&paths, on_event, timing)?;
+    ensure_text(&paths, request.artifact_verification, on_event, timing)?;
     let session_started = timing.start();
     let mut text = TextSession::load(&paths)?;
     timing.record(Phase::ModelSessionConstruction, session_started);
@@ -154,7 +163,7 @@ fn search_with_cache(
     if !missing.is_empty() {
         timing.set_index_cache_state(CacheState::Changed);
         let paths = model_paths()?;
-        ensure_vision(&paths, on_event, timing)?;
+        ensure_vision(&paths, request.artifact_verification, on_event, timing)?;
         let session_started = timing.start();
         let mut vision = VisionSession::load(&paths)?;
         timing.record(Phase::ModelSessionConstruction, session_started);
@@ -190,7 +199,7 @@ fn reindex_and_search(
         None
     } else {
         let paths = model_paths()?;
-        ensure_vision(&paths, on_event, timing)?;
+        ensure_vision(&paths, request.artifact_verification, on_event, timing)?;
         let session_started = timing.start();
         let session = VisionSession::load(&paths)?;
         timing.record(Phase::ModelSessionConstruction, session_started);
@@ -243,7 +252,7 @@ fn search_index(
         None => {
             timing.set_query_cache_state(CacheState::Miss);
             let paths = model_paths()?;
-            ensure_text(&paths, on_event, timing)?;
+            ensure_text(&paths, request.artifact_verification, on_event, timing)?;
             let session_started = timing.start();
             let mut text = TextSession::load(&paths)?;
             timing.record(Phase::ModelSessionConstruction, session_started);
@@ -260,6 +269,7 @@ fn search_index(
 
 fn ensure_vision(
     paths: &ModelPaths,
+    verification: ArtifactVerification,
     on_event: &mut impl FnMut(SearchEvent),
     timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
@@ -269,11 +279,13 @@ fn ensure_vision(
             on_event(SearchEvent::Artifact(event));
         },
         timing,
+        verification,
     )
 }
 
 fn ensure_text(
     paths: &ModelPaths,
+    verification: ArtifactVerification,
     on_event: &mut impl FnMut(SearchEvent),
     timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
@@ -283,6 +295,7 @@ fn ensure_text(
             on_event(SearchEvent::Artifact(event));
         },
         timing,
+        verification,
     )
 }
 
