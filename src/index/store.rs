@@ -901,10 +901,11 @@ mod tests {
             IndexLocation::resolve(root.path(), Some(&index_directory.path().join("index.db")))
                 .unwrap();
         let staged = StagedImageIndex::create(&location, root.path(), test_contract()).unwrap();
+        let expected_parent = index_directory.path().canonicalize().unwrap();
 
         assert_eq!(
             staged.temporary.path().parent(),
-            Some(index_directory.path())
+            Some(expected_parent.as_path())
         );
         staged.install().unwrap();
         assert!(location.path().exists());
