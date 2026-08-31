@@ -33,9 +33,13 @@ if [[ ! -f "${archive}" ]]; then
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
-  printf '%s  %s\n' "${checksum}" "${archive}" | sha256sum -c
+  readonly actual_checksum="$(sha256sum "${archive}" | awk '{print $1}')"
 else
-  printf '%s  %s\n' "${checksum}" "${archive}" | shasum -a 256 --check
+  readonly actual_checksum="$(shasum -a 256 "${archive}" | awk '{print $1}')"
+fi
+if [[ "${actual_checksum}" != "${checksum}" ]]; then
+  echo "ONNX Runtime checksum mismatch: expected ${checksum}, got ${actual_checksum}" >&2
+  exit 1
 fi
 
 if [[ ! -d "${extracted}" ]]; then
