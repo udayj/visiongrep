@@ -53,6 +53,14 @@ pub(crate) struct Cli {
     #[arg(long = "no-cache", help = "Skip reading and writing the index cache")]
     no_cache: bool,
 
+    #[arg(
+        long = "index-path",
+        value_name = "PATH",
+        conflicts_with = "no_cache",
+        help = "Store the index at PATH instead of inside the searched directory"
+    )]
+    index_path: Option<PathBuf>,
+
     #[arg(short = 'q', long = "quiet", help = "Suppress progress output")]
     quiet: bool,
 
@@ -110,6 +118,7 @@ impl Cli {
                 self.top,
                 self.threshold,
                 cache_mode,
+                self.index_path,
                 if self.verify_models {
                     ArtifactVerification::Full
                 } else {
@@ -208,6 +217,21 @@ mod tests {
                 "photos",
                 "--timing-file",
                 "timing.json",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn custom_index_conflicts_with_no_cache() {
+        assert!(
+            Cli::try_parse_from([
+                "visiongrep",
+                "robot",
+                "photos",
+                "--index-path",
+                "index.db",
+                "--no-cache",
             ])
             .is_err()
         );

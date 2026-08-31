@@ -6,15 +6,84 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, params};
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
-use crate::embedding::NormalizedEmbedding;
+use crate::embedding::{EmbeddingContract, NormalizedEmbedding};
 use crate::error::VisionGrepError;
 
 use super::scan::ImageFile;
 
-const EMBEDDING_CACHE_VERSION: i64 = 2;
+const EMBEDDING_CACHE_VERSION: i64 = 3;
 const INDEX_FILE_NAME: &str = ".visiongrep.db";
 const REINDEX_FILE_PREFIX: &str = ".visiongrep.db.reindex-";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const ROOT_METADATA_KEY: &str = "search_root";
+const IMAGE_CONTRACT_METADATA_KEY: &str = "image_embedding_contract";
+const QUERY_CONTRACT_METADATA_KEY: &str = "query_embedding_contract";
+
+#[cfg(test)]
+fn test_contract() -> EmbeddingContract {
+    EmbeddingContract {
+        image: "test-image-contract",
+        query: "test-query-contract",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IndexLocation {
+    path: PathBuf,
+}
+
+impl IndexLocation {
+    /// Resolves custom relative paths against the process working directory.
+    ///
+    /// The parent is canonicalized while the database filename is preserved because the database
+    /// need not exist yet. The default remains search-root-local for compatibility.
+    pub(crate) fn resolve(
+        search_root: &Path,
+        requested: Option<&Path>,
+    ) -> Result<Self, VisionGrepError> {
+        let Some(requested) = requested else {
+            return Ok(Self {
+                path: search_root.join(INDEX_FILE_NAME),
+            });
+        };
+        if requested.file_name().is_none() {
+            return Err(VisionGrepError::IndexPathWithoutFileName {
+                path: requested.to_owned(),
+            });
+        }
+        let path = if requested.is_absolute() {
+            requested.to_owned()
+        } else {
+            std::env::current_dir()
+                .map_err(VisionGrepError::Io)?
+                .join(requested)
+        };
+        if path.is_dir() {
+            return Err(VisionGrepError::IndexPathIsDirectory { path });
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName { path: path.clone() })?;
+        let canonical_parent =
+            parent
+                .canonicalize()
+                .map_err(|source| VisionGrepError::IndexFile {
+                    operation: "resolving index parent directory",
+                    path: parent.to_owned(),
+                    source,
+                })?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName { path: path.clone() })?;
+        Ok(Self {
+            path: canonical_parent.join(file_name),
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImageRecord {
@@ -34,6 +103,7 @@ pub(super) enum ImageUpdate {
 
 pub(crate) struct ImageIndex {
     conn: Connection,
+    path: PathBuf,
 }
 
 pub(crate) struct ReconciliationPlan {
@@ -65,19 +135,28 @@ pub(crate) struct StagedImageIndex {
 }
 
 impl ImageIndex {
-    pub(crate) fn exists(root: &Path) -> bool {
-        root.join(INDEX_FILE_NAME).exists()
+    pub(crate) fn exists(location: &IndexLocation) -> bool {
+        location.path.exists()
     }
 
-    pub(crate) fn open(root: &Path) -> Result<Self, VisionGrepError> {
-        let conn = Connection::open(root.join(INDEX_FILE_NAME))?;
-        Self::from_connection(conn)
+    pub(crate) fn open(
+        location: &IndexLocation,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<Self, VisionGrepError> {
+        let conn = Connection::open(location.path())?;
+        Self::from_connection(conn, location.path().to_owned(), search_root, contract)
     }
 
     #[cfg(test)]
     fn in_memory() -> Result<Self, VisionGrepError> {
         let conn = Connection::open_in_memory()?;
-        Self::from_connection(conn)
+        Self::from_connection(
+            conn,
+            PathBuf::from("<memory>"),
+            Path::new("/test-root"),
+            test_contract(),
+        )
     }
 
     /// Plans incremental reconciliation from one ordered cache read and one merge walk.
@@ -267,18 +346,27 @@ impl ImageIndex {
         Ok(())
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, VisionGrepError> {
+    fn from_connection(
+        conn: Connection,
+        path: PathBuf,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<Self, VisionGrepError> {
         conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
-        let mut index = Self { conn };
-        index.init()?;
+        let mut index = Self { conn, path };
+        index.init(search_root, contract)?;
         Ok(index)
     }
 
     /// Initializes or migrates the persisted embedding contract transactionally.
     ///
-    /// Older cache versions are incompatible and rebuilt. A newer version is rejected so an older
-    /// binary cannot silently corrupt data whose schema or embedding semantics it does not know.
-    fn init(&mut self) -> Result<(), VisionGrepError> {
+    /// Version 2 is migrated without losing its known current embeddings. Contract changes clear
+    /// only the affected vector family, while a wrong-root reuse is rejected before mutation.
+    fn init(
+        &mut self,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<(), VisionGrepError> {
         let version = self
             .conn
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
@@ -289,11 +377,25 @@ impl ImageIndex {
             });
         }
 
+        if version == EMBEDDING_CACHE_VERSION {
+            let stored_root = self.required_metadata(ROOT_METADATA_KEY)?;
+            let stored_root = PathBuf::from(OsString::from_vec(stored_root));
+            if stored_root != search_root {
+                return Err(VisionGrepError::IndexRootMismatch {
+                    index: self.path.clone(),
+                    expected: search_root.to_owned(),
+                    found: stored_root,
+                });
+            }
+        }
+
+        let index_path = self.path.clone();
         let transaction = self.conn.transaction()?;
-        if version < EMBEDDING_CACHE_VERSION {
+        if version < 2 {
             transaction.execute_batch(
                 "DROP TABLE IF EXISTS images;
-                 DROP TABLE IF EXISTS queries;",
+                 DROP TABLE IF EXISTS queries;
+                 DROP TABLE IF EXISTS metadata;",
             )?;
         }
         transaction.execute_batch(
@@ -306,13 +408,75 @@ impl ImageIndex {
              CREATE TABLE IF NOT EXISTS queries (
                 query      TEXT PRIMARY KEY,
                 embedding  BLOB NOT NULL CHECK(length(embedding) = 2048)
+            );
+             CREATE TABLE IF NOT EXISTS metadata (
+                key        TEXT PRIMARY KEY,
+                value      BLOB NOT NULL
             );",
         )?;
+
+        if version < EMBEDDING_CACHE_VERSION {
+            set_metadata(
+                &transaction,
+                ROOT_METADATA_KEY,
+                search_root.as_os_str().as_bytes(),
+            )?;
+            set_metadata(
+                &transaction,
+                IMAGE_CONTRACT_METADATA_KEY,
+                contract.image.as_bytes(),
+            )?;
+            set_metadata(
+                &transaction,
+                QUERY_CONTRACT_METADATA_KEY,
+                contract.query.as_bytes(),
+            )?;
+        } else {
+            let stored_image_contract = required_transaction_metadata(
+                &transaction,
+                &index_path,
+                IMAGE_CONTRACT_METADATA_KEY,
+            )?;
+            if stored_image_contract != contract.image.as_bytes() {
+                transaction.execute("DELETE FROM images", [])?;
+                set_metadata(
+                    &transaction,
+                    IMAGE_CONTRACT_METADATA_KEY,
+                    contract.image.as_bytes(),
+                )?;
+            }
+
+            let stored_query_contract = required_transaction_metadata(
+                &transaction,
+                &index_path,
+                QUERY_CONTRACT_METADATA_KEY,
+            )?;
+            if stored_query_contract != contract.query.as_bytes() {
+                transaction.execute("DELETE FROM queries", [])?;
+                set_metadata(
+                    &transaction,
+                    QUERY_CONTRACT_METADATA_KEY,
+                    contract.query.as_bytes(),
+                )?;
+            }
+        }
         if version < EMBEDDING_CACHE_VERSION {
             transaction.pragma_update(None, "user_version", EMBEDDING_CACHE_VERSION)?;
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    fn required_metadata(&self, key: &'static str) -> Result<Vec<u8>, VisionGrepError> {
+        self.conn
+            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| VisionGrepError::IndexMetadataMissing {
+                path: self.path.clone(),
+                key,
+            })
     }
 
     fn close(self) -> Result<(), VisionGrepError> {
@@ -322,23 +486,64 @@ impl ImageIndex {
     }
 }
 
+fn set_metadata(
+    transaction: &rusqlite::Transaction<'_>,
+    key: &str,
+    value: &[u8],
+) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        "INSERT INTO metadata (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+fn required_transaction_metadata(
+    transaction: &rusqlite::Transaction<'_>,
+    index_path: &Path,
+    key: &'static str,
+) -> Result<Vec<u8>, VisionGrepError> {
+    transaction
+        .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .ok_or_else(|| VisionGrepError::IndexMetadataMissing {
+            path: index_path.to_owned(),
+            key,
+        })
+}
+
 impl StagedImageIndex {
-    pub(crate) fn create(root: &Path) -> Result<Self, VisionGrepError> {
+    pub(crate) fn create(
+        location: &IndexLocation,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<Self, VisionGrepError> {
+        let parent =
+            location
+                .path()
+                .parent()
+                .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName {
+                    path: location.path().to_owned(),
+                })?;
         let temporary = TempFileBuilder::new()
             .prefix(REINDEX_FILE_PREFIX)
-            .tempfile_in(root)
+            .tempfile_in(parent)
             .map_err(|source| VisionGrepError::IndexFile {
                 operation: "creating staged reindex",
-                path: root.to_owned(),
+                path: parent.to_owned(),
                 source,
             })?;
         let conn = Connection::open(temporary.path())?;
-        let index = ImageIndex::from_connection(conn)?;
+        let index =
+            ImageIndex::from_connection(conn, temporary.path().to_owned(), search_root, contract)?;
 
         Ok(Self {
             index,
             temporary,
-            destination: root.join(INDEX_FILE_NAME),
+            destination: location.path().to_owned(),
         })
     }
 
@@ -387,7 +592,21 @@ impl StagedImageIndex {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+
+    fn local_location(root: &Path) -> IndexLocation {
+        IndexLocation::resolve(root, None).unwrap()
+    }
+
+    fn open_disk_index(root: &Path) -> ImageIndex {
+        ImageIndex::open(&local_location(root), root, test_contract()).unwrap()
+    }
+
+    fn create_staged_index(root: &Path) -> StagedImageIndex {
+        StagedImageIndex::create(&local_location(root), root, test_contract()).unwrap()
+    }
 
     fn embedding() -> NormalizedEmbedding {
         let mut values = vec![0.0; crate::embedding::EMBEDDING_DIM];
@@ -501,6 +720,102 @@ mod tests {
     }
 
     #[test]
+    fn image_and_query_contracts_are_invalidated_independently() {
+        let directory = tempfile::tempdir().unwrap();
+        let location = local_location(directory.path());
+        let file = image_file(PathBuf::from("image.jpg"));
+        let query_embedding = embedding();
+        {
+            let mut index = ImageIndex::open(&location, directory.path(), test_contract()).unwrap();
+            insert(&mut index, &file);
+            index
+                .upsert_query_embedding("cached query", &query_embedding)
+                .unwrap();
+        }
+
+        let image_changed = EmbeddingContract {
+            image: "changed-image-contract",
+            query: test_contract().query,
+        };
+        {
+            let mut index = ImageIndex::open(&location, directory.path(), image_changed).unwrap();
+            assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
+            assert_eq!(
+                index.query_embedding("cached query").unwrap(),
+                Some(query_embedding.clone())
+            );
+            insert(&mut index, &file);
+        }
+
+        let query_changed = EmbeddingContract {
+            image: image_changed.image,
+            query: "changed-query-contract",
+        };
+        let index = ImageIndex::open(&location, directory.path(), query_changed).unwrap();
+        assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 1);
+        assert!(index.query_embedding("cached query").unwrap().is_none());
+    }
+
+    #[test]
+    fn custom_index_rejects_reuse_for_another_search_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_root = directory.path().join("first");
+        let second_root = directory.path().join("second");
+        fs::create_dir(&first_root).unwrap();
+        fs::create_dir(&second_root).unwrap();
+        let index_path = directory.path().join("shared.db");
+        let location = IndexLocation::resolve(&first_root, Some(&index_path)).unwrap();
+        drop(ImageIndex::open(&location, &first_root, test_contract()).unwrap());
+
+        let error = match ImageIndex::open(&location, &second_root, test_contract()) {
+            Ok(_) => panic!("wrong-root index reuse unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, VisionGrepError::IndexRootMismatch { .. }));
+    }
+
+    #[test]
+    fn custom_index_does_not_write_inside_search_root() {
+        let root = tempfile::tempdir().unwrap();
+        let index_directory = tempfile::tempdir().unwrap();
+        let index_path = index_directory.path().join("external.db");
+        let location = IndexLocation::resolve(root.path(), Some(&index_path)).unwrap();
+
+        drop(ImageIndex::open(&location, root.path(), test_contract()).unwrap());
+
+        assert!(index_path.exists());
+        assert!(!root.path().join(INDEX_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn relative_custom_index_is_resolved_from_working_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let working_directory = std::env::current_dir().unwrap().canonicalize().unwrap();
+
+        let location = IndexLocation::resolve(root.path(), Some(Path::new("relative.db"))).unwrap();
+
+        assert_eq!(location.path(), working_directory.join("relative.db"));
+    }
+
+    #[test]
+    fn staged_custom_index_lives_beside_its_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let index_directory = tempfile::tempdir().unwrap();
+        let location =
+            IndexLocation::resolve(root.path(), Some(&index_directory.path().join("index.db")))
+                .unwrap();
+        let staged = StagedImageIndex::create(&location, root.path(), test_contract()).unwrap();
+
+        assert_eq!(
+            staged.temporary.path().parent(),
+            Some(index_directory.path())
+        );
+        staged.install().unwrap();
+        assert!(location.path().exists());
+    }
+
+    #[test]
     fn query_embeddings_round_trip() {
         let mut index = ImageIndex::in_memory().unwrap();
 
@@ -530,7 +845,13 @@ mod tests {
         )
         .unwrap();
 
-        let index = ImageIndex::from_connection(conn).unwrap();
+        let index = ImageIndex::from_connection(
+            conn,
+            PathBuf::from("<memory>"),
+            Path::new("/test-root"),
+            test_contract(),
+        )
+        .unwrap();
 
         assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
         let version = index
@@ -538,6 +859,67 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap();
         assert_eq!(version, EMBEDDING_CACHE_VERSION);
+    }
+
+    #[test]
+    fn version_two_index_migrates_without_losing_known_embeddings() {
+        let directory = tempfile::tempdir().unwrap();
+        let location = local_location(directory.path());
+        let conn = Connection::open(location.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE images (
+                path BLOB PRIMARY KEY,
+                mtime_ns INTEGER NOT NULL,
+                size INTEGER NOT NULL,
+                embedding BLOB NOT NULL CHECK(length(embedding) = 2048)
+             );
+             CREATE TABLE queries (
+                query TEXT PRIMARY KEY,
+                embedding BLOB NOT NULL CHECK(length(embedding) = 2048)
+             );
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO images (path, mtime_ns, size, embedding) VALUES (?1, 10, 20, ?2)",
+            params![b"image.jpg", embedding().to_le_bytes()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let index = ImageIndex::open(&location, directory.path(), test_contract()).unwrap();
+
+        assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 1);
+        assert_eq!(
+            index
+                .conn
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            EMBEDDING_CACHE_VERSION
+        );
+    }
+
+    #[test]
+    fn current_schema_without_root_metadata_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let location = local_location(directory.path());
+        let conn = Connection::open(location.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = match ImageIndex::open(&location, directory.path(), test_contract()) {
+            Ok(_) => panic!("index without root metadata unexpectedly opened"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            VisionGrepError::IndexMetadataMissing { .. }
+        ));
     }
 
     #[test]
@@ -612,14 +994,14 @@ mod tests {
         let original_file = image_file(PathBuf::from("original.jpg"));
         let original_query = embedding();
         {
-            let mut original = ImageIndex::open(directory.path()).unwrap();
+            let mut original = open_disk_index(directory.path());
             insert(&mut original, &original_file);
             original
                 .upsert_query_embedding("cached query", &original_query)
                 .unwrap();
         }
 
-        let mut staged = StagedImageIndex::create(directory.path()).unwrap();
+        let mut staged = create_staged_index(directory.path());
         let first_batch = (0..super::super::ingest::INDEX_BATCH_SIZE)
             .map(|number| ImageUpdate::Upsert {
                 file: image_file(PathBuf::from(format!("staged-{number}.jpg"))),
@@ -629,7 +1011,7 @@ mod tests {
         staged.index_mut().apply_updates(first_batch).unwrap();
 
         // A reader opening the active path during the rebuild still sees the complete old index.
-        let concurrent_reader = ImageIndex::open(directory.path()).unwrap();
+        let concurrent_reader = open_disk_index(directory.path());
         assert_eq!(
             concurrent_reader
                 .all_embeddings(Path::new(""))
@@ -659,7 +1041,7 @@ mod tests {
         assert!(staged.index_mut().apply_updates(later_batch).is_err());
         drop(staged);
 
-        let original = ImageIndex::open(directory.path()).unwrap();
+        let original = open_disk_index(directory.path());
         let records = original.all_embeddings(Path::new("")).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].path, original_file.relative_path);
@@ -674,15 +1056,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let old_file = image_file(PathBuf::from("old.jpg"));
         {
-            let mut original = ImageIndex::open(directory.path()).unwrap();
+            let mut original = open_disk_index(directory.path());
             insert(&mut original, &old_file);
         }
 
         let new_file = image_file(PathBuf::from("new.jpg"));
-        let mut staged = StagedImageIndex::create(directory.path()).unwrap();
+        let mut staged = create_staged_index(directory.path());
         insert(staged.index_mut(), &new_file);
         staged.install().unwrap();
-        let installed = ImageIndex::open(directory.path()).unwrap();
+        let installed = open_disk_index(directory.path());
 
         let records = installed.all_embeddings(Path::new("")).unwrap();
         assert_eq!(records.len(), 1);

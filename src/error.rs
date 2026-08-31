@@ -150,6 +150,22 @@ pub(crate) enum VisionGrepError {
     #[error("image index version {found} is newer than the supported version {supported}")]
     IndexVersionTooNew { found: i64, supported: i64 },
 
+    #[error("index path must name a database file: {path}")]
+    IndexPathWithoutFileName { path: PathBuf },
+
+    #[error("index path is a directory: {path}")]
+    IndexPathIsDirectory { path: PathBuf },
+
+    #[error("image index at {index} belongs to search root {found}, not requested root {expected}")]
+    IndexRootMismatch {
+        index: PathBuf,
+        expected: PathBuf,
+        found: PathBuf,
+    },
+
+    #[error("image index at {path} is missing required metadata key {key}")]
+    IndexMetadataMissing { path: PathBuf, key: &'static str },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

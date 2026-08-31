@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use crate::embedding::embed_text;
 use crate::error::VisionGrepError;
 use crate::index::{
-    ImageFile, ImageIndex, IngestEvent, SearchRoot, StagedImageIndex, discover_images,
-    embed_images, ingest_into_index,
+    ImageFile, ImageIndex, IndexLocation, IngestEvent, SearchRoot, StagedImageIndex,
+    discover_images, embed_images, ingest_into_index,
 };
 use crate::model::{
-    ArtifactEvent, ModelPaths, TextSession, VisionSession, ensure_text_artifacts,
-    ensure_vision_artifacts, model_paths,
+    ArtifactEvent, ModelPaths, TextSession, VisionSession, embedding_contract,
+    ensure_text_artifacts, ensure_vision_artifacts, model_paths,
 };
 use crate::ranking::{Ranker, SearchResult};
 use crate::timing::{CacheState, Phase, TimingRecorder};
@@ -32,6 +32,7 @@ pub(crate) struct SearchRequest {
     top: usize,
     threshold: f32,
     cache_mode: CacheMode,
+    index_path: Option<PathBuf>,
     artifact_verification: ArtifactVerification,
 }
 
@@ -42,6 +43,7 @@ impl SearchRequest {
         top: usize,
         threshold: f32,
         cache_mode: CacheMode,
+        index_path: Option<PathBuf>,
         artifact_verification: ArtifactVerification,
     ) -> Self {
         Self {
@@ -50,6 +52,7 @@ impl SearchRequest {
             top,
             threshold,
             cache_mode,
+            index_path,
             artifact_verification,
         }
     }
@@ -83,19 +86,23 @@ pub(crate) fn search(
             search_without_cache(&root, &files, request, on_event, timing)
         }
         CacheMode::Use => {
-            timing.set_index_cache_state(if ImageIndex::exists(root.filesystem_path()) {
+            let location =
+                IndexLocation::resolve(root.filesystem_path(), request.index_path.as_deref())?;
+            timing.set_index_cache_state(if ImageIndex::exists(&location) {
                 CacheState::Hit
             } else {
                 CacheState::Absent
             });
             let index_started = timing.start();
-            let index = ImageIndex::open(root.filesystem_path())?;
+            let index = ImageIndex::open(&location, root.filesystem_path(), embedding_contract())?;
             timing.record(Phase::IndexOpenSchemaInitialization, index_started);
             search_with_cache(&root, &files, request, index, on_event, timing)
         }
         CacheMode::Reindex => {
             timing.set_index_cache_state(CacheState::Reindexed);
-            reindex_and_search(&root, &files, request, on_event, timing)
+            let location =
+                IndexLocation::resolve(root.filesystem_path(), request.index_path.as_deref())?;
+            reindex_and_search(&root, &location, &files, request, on_event, timing)
         }
     }
 }
@@ -185,6 +192,7 @@ fn search_with_cache(
 /// Builds a complete sibling database and exposes it only after every image was processed.
 fn reindex_and_search(
     root: &SearchRoot,
+    location: &IndexLocation,
     files: &[ImageFile],
     request: &SearchRequest,
     on_event: &mut impl FnMut(SearchEvent),
@@ -193,7 +201,7 @@ fn reindex_and_search(
     // Opening the active database first lets SQLite recover any hot journal before its main file is
     // eventually replaced. The connection is kept alive while the sibling index is constructed.
     let index_started = timing.start();
-    let active_index = ImageIndex::open(root.filesystem_path())?;
+    let active_index = ImageIndex::open(location, root.filesystem_path(), embedding_contract())?;
     timing.record(Phase::IndexOpenSchemaInitialization, index_started);
     let mut vision = if files.is_empty() {
         None
@@ -206,7 +214,8 @@ fn reindex_and_search(
         Some(session)
     };
     let staged_started = timing.start();
-    let mut staged = StagedImageIndex::create(root.filesystem_path())?;
+    let mut staged =
+        StagedImageIndex::create(location, root.filesystem_path(), embedding_contract())?;
     timing.record(Phase::IndexOpenSchemaInitialization, staged_started);
 
     if let Some(vision) = &mut vision {
@@ -313,4 +322,38 @@ fn validate_search_path(path: &Path) -> Result<(), VisionGrepError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    #[test]
+    fn custom_index_supports_a_read_only_empty_search_root() {
+        let root = tempfile::tempdir().unwrap();
+        let index_directory = tempfile::tempdir().unwrap();
+        let index_path = index_directory.path().join("index.db");
+        let original_permissions = fs::metadata(root.path()).unwrap().permissions();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        let request = SearchRequest::new(
+            "robot".to_owned(),
+            root.path().to_owned(),
+            5,
+            0.25,
+            CacheMode::Use,
+            Some(index_path.clone()),
+            ArtifactVerification::Fast,
+        );
+        let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
+
+        let results = search(&request, &mut |_| {}, &mut timing);
+        fs::set_permissions(root.path(), original_permissions).unwrap();
+
+        assert!(results.unwrap().is_empty());
+        assert!(index_path.exists());
+        assert!(!root.path().join(".visiongrep.db").exists());
+    }
 }

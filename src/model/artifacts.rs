@@ -9,12 +9,15 @@ use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::application::ArtifactVerification;
+use crate::embedding::EmbeddingContract;
 use crate::error::VisionGrepError;
 use crate::timing::{ModelMetadata, Phase, TimingRecorder};
 
 const VERIFIED_MANIFEST_VERSION: u32 = 1;
 const VERIFIED_MANIFEST_SUFFIX: &str = ".verified.json";
 const MODEL_CONTRACT: &str = "qdrant-clip-vit-b-32-224-v1";
+const IMAGE_EMBEDDING_CONTRACT: &str = "qdrant-clip-vit-b-32-224-v1;vision=a636590e595dbbd798647c9dd4550d5652fba969;sha256=c68d3d9a200ddd2a8c8a5510b576d4c94d1ae383bf8b36dd8c084f94e1fb4d63;preprocess=rgb-center-crop-224-catmullrom-openai-clip-normalization";
+const QUERY_EMBEDDING_CONTRACT: &str = "qdrant-clip-vit-b-32-224-v1;text=48ca1db27cb4063eb311ec2aa7f087a808112876;sha256=4dbe762b11e36488304471e439cde89da053ad7acaddbf9e096745d142ec8d8b;tokenizer_sha256=b68d571997a1f81bf521fb73806740ddb91e4ed6666cb6e996c066bb289cf55b;tokens=77-pad-1";
 const VISION_MODEL_REVISION: &str = "a636590e595dbbd798647c9dd4550d5652fba969";
 const TEXT_MODEL_REVISION: &str = "48ca1db27cb4063eb311ec2aa7f087a808112876";
 const VISION_MODEL_URL: &str = "https://huggingface.co/Qdrant/clip-ViT-B-32-vision/resolve/a636590e595dbbd798647c9dd4550d5652fba969/model.onnx";
@@ -112,6 +115,13 @@ pub(crate) fn timing_metadata() -> ModelMetadata {
         text_revision: TEXT_MODEL_REVISION,
         text_sha256: TEXT_MODEL_SHA256,
         tokenizer_sha256: TOKENIZER_SHA256,
+    }
+}
+
+pub(crate) fn embedding_contract() -> EmbeddingContract {
+    EmbeddingContract {
+        image: IMAGE_EMBEDDING_CONTRACT,
+        query: QUERY_EMBEDDING_CONTRACT,
     }
 }
 

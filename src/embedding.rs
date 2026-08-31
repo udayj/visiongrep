@@ -20,6 +20,12 @@ const INPUT_TENSOR_BYTES: u64 = PREPROCESSED_RGB_BYTES * 4;
 const CLIP_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
 const CLIP_STD: [f32; 3] = [0.26862954, 0.261_302_6, 0.275_777_1];
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EmbeddingContract {
+    pub(crate) image: &'static str,
+    pub(crate) query: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct NormalizedEmbedding(Box<[f32; EMBEDDING_DIM]>);
 
