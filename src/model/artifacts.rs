@@ -553,7 +553,7 @@ mod tests {
         let destination = directory.path().join("artifact.bin");
         fs::write(&destination, b"verified artifact").unwrap();
         let mut events = Vec::new();
-        let mut timing = TimingRecorder::disabled(timing_metadata());
+        let mut timing = TimingRecorder::new(true, timing_metadata());
         let spec = spec("revision-a", VERIFIED_SHA256, 17);
         write_verified_manifest(spec, &destination).unwrap();
 
@@ -567,6 +567,7 @@ mod tests {
         .unwrap();
 
         assert!(events.is_empty());
+        assert_eq!(timing.phase_invocations(Phase::ArtifactValidation), 1);
     }
 
     #[test]

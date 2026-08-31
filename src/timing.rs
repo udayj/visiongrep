@@ -176,6 +176,13 @@ impl TimingRecorder {
         self.enabled
     }
 
+    #[cfg(test)]
+    pub(crate) fn phase_invocations(&self, phase: Phase) -> u64 {
+        self.phases
+            .get(&phase)
+            .map_or(0, |measurement| measurement.invocations)
+    }
+
     pub(crate) fn set_corpus_size(&mut self, corpus_size: usize) {
         self.environment.corpus_size = corpus_size;
     }
