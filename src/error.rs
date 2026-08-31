@@ -137,6 +137,9 @@ pub(crate) enum VisionGrepError {
         source: ndarray::ShapeError,
     },
 
+    #[error("vision inference returned {actual} embeddings for {expected} prepared images")]
+    ImageBatchResultCount { expected: usize, actual: usize },
+
     #[error("failed to read image metadata for {path}: {source}")]
     ImageMetadata {
         path: PathBuf,

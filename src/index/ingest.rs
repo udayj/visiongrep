@@ -113,8 +113,19 @@ fn embed_image_batch_with_skip_policy(
     timing: &mut TimingRecorder,
 ) -> Result<Vec<Option<NormalizedEmbedding>>, VisionGrepError> {
     let prepared = prepare_images_parallel(root, files, timing)?;
-    let mut valid_indices = Vec::with_capacity(files.len());
-    let mut valid_images = Vec::with_capacity(files.len());
+    infer_prepared_batch(files.len(), prepared, on_event, |valid_images| {
+        embed_prepared_images(valid_images, session, timing)
+    })
+}
+
+fn infer_prepared_batch(
+    file_count: usize,
+    prepared: Vec<Result<PreparedImage, ImagePreparationError>>,
+    on_event: &mut impl FnMut(IngestEvent),
+    infer: impl FnOnce(Vec<PreparedImage>) -> Result<Vec<NormalizedEmbedding>, VisionGrepError>,
+) -> Result<Vec<Option<NormalizedEmbedding>>, VisionGrepError> {
+    let mut valid_indices = Vec::with_capacity(file_count);
+    let mut valid_images = Vec::with_capacity(file_count);
     for (index, result) in prepared.into_iter().enumerate() {
         match result {
             Ok(image) => {
@@ -125,8 +136,15 @@ fn embed_image_batch_with_skip_policy(
         }
     }
 
-    let embeddings = embed_prepared_images(valid_images, session, timing)?;
-    let mut ordered = (0..files.len()).map(|_| None).collect::<Vec<_>>();
+    let expected = valid_indices.len();
+    let embeddings = infer(valid_images)?;
+    if embeddings.len() != expected {
+        return Err(VisionGrepError::ImageBatchResultCount {
+            expected,
+            actual: embeddings.len(),
+        });
+    }
+    let mut ordered = (0..file_count).map(|_| None).collect::<Vec<_>>();
     for (index, embedding) in valid_indices.into_iter().zip(embeddings) {
         ordered[index] = Some(embedding);
     }
@@ -264,6 +282,46 @@ mod tests {
             Err(ImagePreparationError::Decode { .. })
         ));
         assert!(results[2].is_ok());
+    }
+
+    #[test]
+    fn batch_inference_errors_abort_without_dropping_images() {
+        let directory = tempfile::tempdir().unwrap();
+        write_test_image(&directory.path().join("00.png"), 1);
+        write_test_image(&directory.path().join("01.png"), 2);
+        let root = SearchRoot::resolve(directory.path()).unwrap();
+        let files = discover_images(&root).unwrap();
+        let prepared = prepare_images_with_workers(&root, &files, false, 2).unwrap();
+
+        let error = infer_prepared_batch(files.len(), prepared, &mut |_| {}, |_| {
+            Err(VisionGrepError::Io(std::io::Error::other(
+                "injected inference failure",
+            )))
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, VisionGrepError::Io(_)));
+    }
+
+    #[test]
+    fn incomplete_batch_results_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        write_test_image(&directory.path().join("00.png"), 1);
+        write_test_image(&directory.path().join("01.png"), 2);
+        let root = SearchRoot::resolve(directory.path()).unwrap();
+        let files = discover_images(&root).unwrap();
+        let prepared = prepare_images_with_workers(&root, &files, false, 2).unwrap();
+
+        let error = infer_prepared_batch(files.len(), prepared, &mut |_| {}, |_| Ok(Vec::new()))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            VisionGrepError::ImageBatchResultCount {
+                expected: 2,
+                actual: 0
+            }
+        ));
     }
 
     #[test]
