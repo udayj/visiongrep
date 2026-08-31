@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require identical top-K paths, ordering, and threshold decisions between two runs."""
+"""Compare top-K paths, ordering, and threshold decisions, strictly unless report-only."""
 
 from __future__ import annotations
 

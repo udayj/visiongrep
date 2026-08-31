@@ -5,3 +5,12 @@ test1/
 __pycache__/
 *.pyc
 /benchmarks/work/
+.benchmark-rclip/
+.venv/
+*.onnx
+*.safetensors
+*.mlpackage/
+*.db
+*.db-*
+*.sqlite3
+*.tgz

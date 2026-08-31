@@ -42,6 +42,11 @@ are similarities, not probabilities or confidences.
 The checked-in summary under `results/` is intentionally small. It records the code/model/hardware
 contract and aggregate values, never raw per-query logs.
 
+See `RESULTS.md` for the recorded quality, performance, Core ML, and optimization decisions. The
+cross-system behavior report distinguishes exact ordering, top-K membership, top-1, threshold-path,
+and no-match agreement. This matters because Pillow/libjpeg and Rust image decoding can produce
+small JPEG pixel differences even when the pinned model and preprocessing math are equivalent.
+
 ## Phase timing scenarios
 
 `performance/run_scenarios.py` records 21 process-cold samples by default for:
@@ -58,6 +63,10 @@ Each invocation writes VisionGrep's phase JSON. The summary reports medians and 
 with at least 20 samples. GitHub-hosted runners do not expose a safe filesystem-cache eviction API,
 so those runs are labelled filesystem-cache warm/uncontrolled rather than filesystem-cache cold.
 The network scenario is kept separate because transfer time is variable.
+
+Image decoding and preprocessing measurements sum per-image worker durations, so they describe
+parallel work and may exceed elapsed wall time. `total_wall_ms` and the non-overlapping orchestration
+phases remain wall-clock measurements.
 
 ## Reproduction
 
@@ -103,3 +112,29 @@ PYTHONPATH=benchmarks/retrieval python benchmarks/retrieval/evaluate.py \
 ```
 
 The adapter verifies the rclip commit and every model checksum before loading code or weights.
+
+Run the seven process-cold scenarios with:
+
+```sh
+python benchmarks/performance/run_scenarios.py \
+  --binary target/release/visiongrep \
+  --corpus "$RUNNER_TEMP/visiongrep-coco/images" \
+  --cache-home "$RUNNER_TEMP/visiongrep-cache" \
+  --output "$RUNNER_TEMP/phase-timing" --samples 21
+```
+
+Add `--include-network` only when the separately reported, variable model-download scenario is
+wanted. Use the manually triggered Apple Silicon workflow for Core ML; compilation or conversion on
+a non-Apple host is not accepted as runtime evidence.
+
+Run the isolated Rust measurement matrices in release mode:
+
+```sh
+cargo test --release reconciliation_performance_matrix -- --ignored --nocapture
+cargo test --release ranking_selection_matrix -- --ignored --nocapture
+cargo test --release vision_batch_size_matrix -- --ignored --nocapture
+VISIONGREP_PREPROCESS_DATASET="$RUNNER_TEMP/visiongrep-coco/images" \
+  cargo test --release preprocessing_worker_matrix -- --ignored --nocapture
+```
+
+The vision batch matrix requires the pinned model in the remote runner's `XDG_CACHE_HOME`.

@@ -1,4 +1,4 @@
-# visiongrep — spec v0.1
+# visiongrep — retrieval foundation specification
 
 ## What it is
 
@@ -37,7 +37,9 @@ visiongrep/
 │   ├── application.rs   # cached/no-cache search orchestration
 │   ├── embedding.rs     # image preprocessing and embedding normalization
 │   ├── error.rs         # VisionGrepError enum (thiserror)
-│   ├── ranking.rs       # cosine similarity, thresholding, and top-K ranking
+│   ├── pillow_resize.rs # Pillow-compatible bicubic resize contract
+│   ├── ranking.rs       # cosine similarity and deterministic bounded top-K
+│   ├── timing.rs        # opt-in machine-readable phase measurements
 │   ├── cli/
 │   │   ├── mod.rs       # CLI subsystem facade
 │   │   ├── args.rs      # clap parsing and typed command construction
@@ -51,7 +53,8 @@ visiongrep/
 │       ├── mod.rs       # model subsystem facade
 │       ├── artifacts.rs # model installation, verification, and transfer events
 │       └── runtime.rs   # tokenizer and ONNX session/inference ownership
-└── README.md
+├── benchmarks/          # isolated Python/reference and performance tooling
+└── THIRD_PARTY_NOTICES.md
 ```
 
 ---
@@ -60,19 +63,19 @@ visiongrep/
 
 ```toml
 [dependencies]
-ort = "2"                        # ONNX Runtime bindings
+ort = "=2.0.0-rc.12"             # ONNX Runtime 1.24 bindings
 image = "0.25"                   # image decoding (JPEG, PNG, WEBP, BMP)
-tokenizers = "0.19"              # CLIP text tokenizer (HuggingFace)
-ndarray = "0.15"                 # tensor ops
-rusqlite = { version = "0.31", features = ["bundled"] }
+tokenizers = "0.22"              # OpenCLIP text tokenizer (HuggingFace)
+ndarray = "0.17"                 # tensor assembly
+rusqlite = { version = "0.39", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
-indicatif = "0.17"               # progress bars
+indicatif = "0.18"               # progress bars
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"                   # artifact checksums
-tempfile = "3"                  # unique same-directory artifact downloads
+tempfile = "3"                  # unique same-directory downloads and staged indexes
 walkdir = "2"                    # recursive directory traversal
 ```
 
@@ -82,18 +85,26 @@ No `torch`. No `transformers`. No Python interop.
 
 ## Models
 
-Two pinned ONNX files, downloaded on first run:
+Two pinned ONNX files and their exact tokenizer, downloaded on first run:
 
 | File | Source | Size |
 |---|---|---|
-| `clip_vision.onnx` | `Qdrant/clip-ViT-B-32-vision` on HuggingFace | ~352 MB |
-| `clip_text.onnx` | `Qdrant/clip-ViT-B-32-text` on HuggingFace | ~254 MB |
+| `datacomp_vision.onnx` | rclip conversion of `laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K` | 351,826,068 bytes |
+| `datacomp_text.onnx` | matching rclip text encoder conversion | 254,344,274 bytes |
+| `datacomp_tokenizer.json` | pinned original OpenCLIP tokenizer contract | 2,224,081 bytes |
 
 Download destination: `~/.cache/visiongrep/models/`
 
-The model URLs use immutable Hugging Face revisions. Both models and the matching tokenizer are
-verified with pinned SHA-256 checksums before atomic installation. If the cache directory already
-contains valid files, skip download silently.
+The model URLs use immutable Hugging Face revisions. Models, tokenizer, source OpenCLIP weights,
+conversion revisions, exact sizes, and SHA-256 values are recorded in
+`benchmarks/retrieval/benchmark_manifest.json`. Downloaded artifacts are hashed while streaming to
+a sibling temporary file and atomically installed only after size and checksum validation.
+
+Each installed artifact has a versioned verified-install manifest tied to the immutable revision,
+expected size/checksum, and local file identity. Normal loading trusts a matching marker without
+re-reading hundreds of megabytes; `--verify-models` forces a complete hash. Missing, stale,
+malformed, or mismatched markers fall back to full verification and can never make a partial
+download valid. Licenses and attribution are in `THIRD_PARTY_NOTICES.md` and `third_party/`.
 
 The matching `tokenizer.json` is downloaded alongside the text model. Model artifacts live in
 `~/.cache/visiongrep/models/`, outside the searched folder.
@@ -117,6 +128,10 @@ Options:
   -0, --null             Output exact paths separated by NUL bytes
   --reindex              Force re-embedding of all images, ignoring cache
   --no-cache             Skip reading and writing the index cache
+  --index-path <PATH>    Use an explicit index outside the searched tree
+  --verify-models        Fully hash every model artifact needed by this search
+  --timing               Emit one phase-timing JSON document to stderr
+  --timing-file <PATH>   Write --timing JSON to PATH instead
   -q, --quiet            Suppress progress output (useful in scripts)
   -h, --help             Print help
   -V, --version          Print version
@@ -201,11 +216,27 @@ loads neither ONNX model: the command reads cached image/query vectors and perfo
 Novel queries load only the text model. New or changed images load only the vision model unless the
 query is also novel.
 
+The schema also has a `metadata(key TEXT PRIMARY KEY, value BLOB NOT NULL)` table. Schema version 3
+stores the canonical native-byte search root plus separate image-embedding and query-embedding
+contracts. A wrong-root custom index is rejected before mutation. Image-contract changes clear
+image and query vectors; query-only contract changes preserve image vectors.
+
 `--reindex` builds and verifies a unique sibling database using bounded write transactions, then
 atomically replaces the active index. A failed rebuild leaves the previous image and query caches
 untouched, and concurrent readers see either the previous complete index or the replacement.
 `--no-cache` skips reading and writing entirely — embeds everything fresh each run. Useful for scripting against small folders.
 The two flags are mutually exclusive.
+
+`--index-path` resolves relative paths from the process working directory, leaves the image tree
+untouched, and supports cached search over a read-only tree. Reindex temporary files are created
+beside the selected destination for a same-filesystem atomic rename. Back up the SQLite file only
+while no writer is active; the index is deliberately bound to one canonical root and is not a
+portable image bundle. SQLite's five-second busy timeout makes concurrent-writer failure explicit.
+
+Incremental reconciliation loads cached `(path, mtime_ns, size)` rows in one ordered query and
+merge-walks them against byte-sorted discovery results. Stale deletions and embedding updates are
+transactional. Native Unix path bytes, nanosecond mtime, size semantics, and deterministic ordering
+are preserved.
 
 ---
 
@@ -217,34 +248,36 @@ The two flags are mutually exclusive.
    or images whose estimated peak working memory exceeds 512 MiB
 2. Decode with `image` and apply EXIF orientation
 3. Convert to RGB
-4. Take the centered square crop without stretching the image
-5. Resize the square to 224×224 with Catmull-Rom bicubic filtering
+4. Resize the short edge to 256 with Pillow 12.3-compatible bicubic coefficients and rounding
+5. Take the centered 256×256 crop using Python round-half-to-even crop coordinates
 6. Normalize with CLIP mean `[0.48145466, 0.4578275, 0.40821073]` and std `[0.26862954, 0.26130258, 0.27577711]`
-7. Run through `clip_vision.onnx` — input shape `[1, 3, 224, 224]`, output shape `[1, 512]`
+7. Run through `datacomp_vision.onnx` — dynamic input `[N, 3, 256, 256]`, output `[N, 512]`
 8. L2-normalize the output vector
 
-The crop-first implementation is geometrically equivalent to the model's resize-short-edge then
-center-crop policy for ordinary images while avoiding a potentially enormous intermediate image for
-pathological panorama aspect ratios. Tiny images are upscaled; portrait and landscape images retain
-their geometry.
+Tiny images are upscaled; portrait and landscape images retain their geometry. The pre-allocation
+working-memory check includes decode, orientation, RGB conversion, resized image, crop, and `f32`
+tensor buffers.
 
 ### Text embedding
 
-1. Tokenize with the matching `tokenizer.json`: include special tokens, truncate to 77 positions,
-   and right-pad to 77 with ID `1`, token `<|endoftext|>`, and attention-mask value `0`
-2. Run through `clip_text.onnx` — input `input_ids [1, 77]` and `attention_mask [1, 77]`, output `[1, 512]`
+1. Tokenize with the matching OpenCLIP tokenizer: include special tokens, truncate to 77 positions,
+   and right-pad to 77 with ID `0` and token `<|endoftext|>`
+2. Run through `datacomp_text.onnx` — one `input_ids [1, 77]` input and output `[1, 512]`
 3. L2-normalize the output vector
 
 ### Search
 
 Cosine similarity = dot product of two L2-normalized vectors (just a dot product, since both are unit vectors).
 
-Rank all indexed images by similarity to query vector, return up to N above threshold. If none meet
+Use a bounded deterministic heap to select up to N images above threshold, then return them in
+score-descending/path-ascending order. If none meet
 the threshold, emit no result rows and exit 1.
 
-Text embedding runs once for a novel query and is reused for exact repeated queries. Image decoding,
-preprocessing, and inference are currently sequential; batching or parallel preprocessing should be
-added only after representative indexing measurements identify it as the bottleneck.
+Text embedding runs once for a novel query and is reused for exact repeated queries. Indexing uses
+up to four scoped preprocessing workers, an atomic work index, ordered result restoration, batches
+of eight images, and one inference consumer. Memory is bounded by the 256-image persistence chunk,
+eight-image inference batches, and four preprocessing workers. Recoverable decode/resource failures
+produce explicit skip events; worker, inference, cardinality, runtime, and database failures abort.
 
 ---
 
@@ -253,10 +286,10 @@ added only after representative indexing measurements identify it as the bottlen
 ```
 $ visiongrep "sunset over water" ./photos/
 
-Downloading CLIP vision model (352 MB)...
+Downloading DataComp CLIP vision model (352 MB)...
 [████████████████████░░░░░░░░░░] 312/352 MB  4.2 MB/s  eta 9s
 
-Downloading CLIP text model (254 MB)...
+Downloading DataComp CLIP text model (254 MB)...
 [██████████████████████████████] 254/254 MB  done
 
 Indexing 1,432 images...
@@ -271,19 +304,16 @@ On subsequent runs against the same directory, indexing is skipped (only new ima
 
 ---
 
-## Benchmark reporting plan
+## Benchmark reporting
 
-v0.1 should report benchmark numbers once representative image folders are available.
-Do not treat these as guaranteed targets before measurement; they are the metrics that
-should appear in the README and launch post:
+`benchmarks/README.md` specifies the pinned COCO/reproducible-fixture corpus, rclip v3.3.0 adapter,
+metrics, phase scenarios, cache-state labels, licensing, and exact reproduction commands. Small
+aggregate evidence is stored in `benchmarks/results/remote_foundation.json`; raw vectors, per-query
+logs, models, indexes, and dataset images remain runner artifacts or temporary files.
 
-- Warm cached search over 1,000 images
-- Warm cached search over 10,000 images
-- Startup overhead before model/query work
-- Index throughput in images/sec on representative datasets
-- Incremental re-run against an unchanged folder, confirming no image re-embedding
-- Repeated-query time on an unchanged folder, confirming no ONNX session is loaded
-- No-match precision over deliberately unrelated queries at the default threshold
+Normal CI does not download models. Manually triggered model-contract CI verifies OpenCLIP, ONNX,
+tokenizer, golden vectors, scores, rankings, and batching. Heavy retrieval/timing and real Apple
+Silicon Core ML experiments are also manual workflows with read-only repository permissions.
 
 ---
 
@@ -302,8 +332,9 @@ Release notes and README benchmarks should report:
 
 ## Error handling
 
-- Unsupported image format: skip silently, warn with filename if not `--quiet`
-- Corrupt image: skip silently, warn
+- Unsupported extensions are excluded during discovery
+- Corrupt, unreadable, oversized, or invalid-dimension images: emit an explicit skip event and
+  warning unless `--quiet`; remove any stale cached record
 - Download failure: exit with clear message, suggest checking connection
 - Checksum mismatch: delete partial file, exit with message
 - Permission error on cache dir: exit with a typed error; never silently change persistence behavior
