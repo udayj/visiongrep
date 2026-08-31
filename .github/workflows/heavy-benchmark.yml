@@ -16,6 +16,9 @@ on:
         type: boolean
         required: true
         default: true
+  push:
+    branches: [codex/retrieval-performance-foundation]
+    paths: [.github/benchmark-trigger]
 
 permissions:
   contents: read
@@ -78,7 +81,7 @@ jobs:
       - name: Materialize pinned corpus outside the checkout
         run: |
           .benchmark-rclip/.venv/bin/python benchmarks/retrieval/prepare_coco.py \
-            --output "$RUNNER_TEMP/coco" --count "${{ inputs.corpus_size }}" --workers 8
+            --output "$RUNNER_TEMP/coco" --count "${{ inputs.corpus_size || '500' }}" --workers 8
           .benchmark-rclip/.venv/bin/python benchmarks/retrieval/generate_fixtures.py \
             --output "$RUNNER_TEMP/coco/images" > "$RUNNER_TEMP/generated-fixtures.json"
       - name: Build candidate and pinned baseline
@@ -129,11 +132,11 @@ jobs:
       - name: Run repeated phase timing scenarios
         run: |
           NETWORK_FLAG=''
-          if [ "${{ inputs.include_network_scenario }}" = true ]; then NETWORK_FLAG='--include-network'; fi
+          if [ "${{ github.event_name == 'push' || inputs.include_network_scenario }}" = true ]; then NETWORK_FLAG='--include-network'; fi
           .benchmark-rclip/.venv/bin/python benchmarks/performance/run_scenarios.py \
             --binary target/release/visiongrep --corpus "$RUNNER_TEMP/coco/images" \
             --cache-home "$RUNNER_TEMP/visiongrep-cache" --output "$RUNNER_TEMP/phase-timing" \
-            --samples "${{ inputs.performance_samples }}" $NETWORK_FLAG
+            --samples "${{ inputs.performance_samples || '21' }}" $NETWORK_FLAG
       - uses: actions/upload-artifact@v4
         if: always()
         with:

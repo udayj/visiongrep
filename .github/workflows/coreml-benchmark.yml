@@ -11,6 +11,9 @@ on:
         description: End-to-end repetitions
         required: true
         default: "5"
+  push:
+    branches: [codex/retrieval-performance-foundation]
+    paths: [.github/benchmark-trigger]
 
 permissions:
   contents: read
@@ -80,14 +83,14 @@ jobs:
       - name: Materialize pinned corpus
         run: |
           .benchmark-rclip/.venv/bin/python benchmarks/retrieval/prepare_coco.py \
-            --output "$RUNNER_TEMP/coco" --count "${{ inputs.corpus_size }}" --workers 8
+            --output "$RUNNER_TEMP/coco" --count "${{ inputs.corpus_size || '500' }}" --workers 8
           .benchmark-rclip/.venv/bin/python benchmarks/retrieval/generate_fixtures.py \
             --output "$RUNNER_TEMP/coco/images" > "$RUNNER_TEMP/generated-fixtures.json"
       - name: Run repeated CPU ONNX and Core ML end-to-end measurements
         run: |
           mkdir -p "$RUNNER_TEMP/onnx-data" "$RUNNER_TEMP/coreml-data/ViT-B-32-256-datacomp_s34b_b86k"
           cp -R "$MODEL_CACHE/visual.mlpackage" "$RUNNER_TEMP/coreml-data/ViT-B-32-256-datacomp_s34b_b86k/visual.mlpackage"
-          for sample in $(seq 1 "${{ inputs.repetitions }}"); do
+          for sample in $(seq 1 "${{ inputs.repetitions || '5' }}"); do
             rm -f "$RUNNER_TEMP/onnx-data/db.sqlite3" "$RUNNER_TEMP/coreml-data/db.sqlite3"
             RCLIP_USE_ONNX_ON_MACOS=1 .benchmark-rclip/.venv/bin/python benchmarks/retrieval/run_rclip.py \
               --system rclip-onnx --rclip-source .benchmark-rclip --artifact-dir "$MODEL_CACHE" \
@@ -105,7 +108,7 @@ jobs:
           PYTHONPATH=benchmarks/retrieval .benchmark-rclip/.venv/bin/python \
             benchmarks/retrieval/compare_behavior.py --reference "$RUNNER_TEMP/onnx-1.json" \
             --candidate "$RUNNER_TEMP/coreml-1.json" --output "$RUNNER_TEMP/coreml-behavior.json"
-          for sample in $(seq 2 "${{ inputs.repetitions }}"); do
+          for sample in $(seq 2 "${{ inputs.repetitions || '5' }}"); do
             PYTHONPATH=benchmarks/retrieval .benchmark-rclip/.venv/bin/python \
               benchmarks/retrieval/compare_behavior.py --reference "$RUNNER_TEMP/coreml-1.json" \
               --candidate "$RUNNER_TEMP/coreml-$sample.json" \
