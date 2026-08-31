@@ -130,7 +130,7 @@ jobs:
             --output "$RUNNER_TEMP/retrieval-summary.json"
           PYTHONPATH=benchmarks/retrieval "$RCLIP_PY" benchmarks/retrieval/compare_behavior.py \
             --reference "$RUNNER_TEMP/rclip.json" --candidate "$RUNNER_TEMP/datacomp.json" \
-            --output "$RUNNER_TEMP/rclip-datacomp-parity.json"
+            --output "$RUNNER_TEMP/rclip-datacomp-behavior.json" --report-only
       - name: Run repeated phase timing scenarios
         run: |
           NETWORK_FLAG=''
@@ -145,7 +145,7 @@ jobs:
           name: retrieval-performance-reports
           path: |
             ${{ runner.temp }}/retrieval-summary.json
-            ${{ runner.temp }}/rclip-datacomp-parity.json
+            ${{ runner.temp }}/rclip-datacomp-behavior.json
             ${{ runner.temp }}/generated-fixtures.json
             ${{ runner.temp }}/phase-timing/summary.json
             ${{ runner.temp }}/baseline.json

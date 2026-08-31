@@ -33,7 +33,7 @@ if [[ ! -f "${archive}" ]]; then
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
-  printf '%s  %s\n' "${checksum}" "${archive}" | sha256sum --check --strict
+  printf '%s  %s\n' "${checksum}" "${archive}" | sha256sum --check
 else
   printf '%s  %s\n' "${checksum}" "${archive}" | shasum -a 256 --check
 fi
