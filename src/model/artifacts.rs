@@ -15,22 +15,25 @@ use crate::timing::{ModelMetadata, Phase, TimingRecorder};
 
 const VERIFIED_MANIFEST_VERSION: u32 = 1;
 const VERIFIED_MANIFEST_SUFFIX: &str = ".verified.json";
-const MODEL_CONTRACT: &str = "qdrant-clip-vit-b-32-224-v1";
-const IMAGE_EMBEDDING_CONTRACT: &str = "qdrant-clip-vit-b-32-224-v1;vision=a636590e595dbbd798647c9dd4550d5652fba969;sha256=c68d3d9a200ddd2a8c8a5510b576d4c94d1ae383bf8b36dd8c084f94e1fb4d63;preprocess=rgb-center-crop-224-catmullrom-openai-clip-normalization";
-const QUERY_EMBEDDING_CONTRACT: &str = "qdrant-clip-vit-b-32-224-v1;text=48ca1db27cb4063eb311ec2aa7f087a808112876;sha256=4dbe762b11e36488304471e439cde89da053ad7acaddbf9e096745d142ec8d8b;tokenizer_sha256=b68d571997a1f81bf521fb73806740ddb91e4ed6666cb6e996c066bb289cf55b;tokens=77-pad-1";
-const VISION_MODEL_REVISION: &str = "a636590e595dbbd798647c9dd4550d5652fba969";
-const TEXT_MODEL_REVISION: &str = "48ca1db27cb4063eb311ec2aa7f087a808112876";
-const VISION_MODEL_URL: &str = "https://huggingface.co/Qdrant/clip-ViT-B-32-vision/resolve/a636590e595dbbd798647c9dd4550d5652fba969/model.onnx";
-const TEXT_MODEL_URL: &str = "https://huggingface.co/Qdrant/clip-ViT-B-32-text/resolve/48ca1db27cb4063eb311ec2aa7f087a808112876/model.onnx";
-const TOKENIZER_URL: &str = "https://huggingface.co/Qdrant/clip-ViT-B-32-text/resolve/48ca1db27cb4063eb311ec2aa7f087a808112876/tokenizer.json";
+const MODEL_CONTRACT: &str = "openclip-vit-b-32-256-datacomp-s34b-b86k-v1";
+const IMAGE_EMBEDDING_CONTRACT: &str = "openclip-vit-b-32-256-datacomp-s34b-b86k-v1;source=4afec35ffe57a943d569ff7ee888061830164da8;onnx=17b9d07433aad73f70d338d8a1c7a4cef83887e0;sha256=3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c;preprocess=rgb-short-edge-256-bicubic-center-crop-openai-clip-normalization";
+const QUERY_EMBEDDING_CONTRACT: &str = "openclip-vit-b-32-256-datacomp-s34b-b86k-v1;source=4afec35ffe57a943d569ff7ee888061830164da8;onnx=17b9d07433aad73f70d338d8a1c7a4cef83887e0;sha256=ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc;tokenizer_sha256=72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85;tokens=openclip-77-pad-0";
+const OPENCLIP_MODEL_REVISION: &str = "4afec35ffe57a943d569ff7ee888061830164da8";
+const RCLIP_MODEL_REVISION: &str = "17b9d07433aad73f70d338d8a1c7a4cef83887e0";
+const VISION_MODEL_REVISION: &str = RCLIP_MODEL_REVISION;
+const TEXT_MODEL_REVISION: &str = RCLIP_MODEL_REVISION;
+const TOKENIZER_REVISION: &str = OPENCLIP_MODEL_REVISION;
+const VISION_MODEL_URL: &str = "https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/visual.onnx";
+const TEXT_MODEL_URL: &str = "https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/textual.onnx";
+const TOKENIZER_URL: &str = "https://huggingface.co/laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K/resolve/4afec35ffe57a943d569ff7ee888061830164da8/tokenizer.json";
 
 const VISION_MODEL_SHA256: &str =
-    "c68d3d9a200ddd2a8c8a5510b576d4c94d1ae383bf8b36dd8c084f94e1fb4d63";
-const TEXT_MODEL_SHA256: &str = "4dbe762b11e36488304471e439cde89da053ad7acaddbf9e096745d142ec8d8b";
-const TOKENIZER_SHA256: &str = "b68d571997a1f81bf521fb73806740ddb91e4ed6666cb6e996c066bb289cf55b";
-const VISION_MODEL_SIZE: u64 = 351_686_194;
-const TEXT_MODEL_SIZE: u64 = 254_102_519;
-const TOKENIZER_SIZE: u64 = 2_224_147;
+    "3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c";
+const TEXT_MODEL_SHA256: &str = "ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc";
+const TOKENIZER_SHA256: &str = "72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85";
+const VISION_MODEL_SIZE: u64 = 351_826_068;
+const TEXT_MODEL_SIZE: u64 = 254_344_274;
+const TOKENIZER_SIZE: u64 = 2_224_081;
 
 #[derive(Debug, Clone, Copy)]
 struct ArtifactSpec {
@@ -58,7 +61,7 @@ const TEXT_MODEL: ArtifactSpec = ArtifactSpec {
 const TOKENIZER: ArtifactSpec = ArtifactSpec {
     name: "CLIP tokenizer",
     url: TOKENIZER_URL,
-    revision: TEXT_MODEL_REVISION,
+    revision: TOKENIZER_REVISION,
     sha256: TOKENIZER_SHA256,
     size: TOKENIZER_SIZE,
 };
@@ -101,9 +104,9 @@ pub(crate) fn model_paths() -> Result<ModelPaths, VisionGrepError> {
     })?;
 
     Ok(ModelPaths {
-        vision_model: model_dir.join("clip_vision.onnx"),
-        text_model: model_dir.join("clip_text.onnx"),
-        tokenizer: model_dir.join("tokenizer.json"),
+        vision_model: model_dir.join("datacomp_vision.onnx"),
+        text_model: model_dir.join("datacomp_text.onnx"),
+        tokenizer: model_dir.join("datacomp_tokenizer.json"),
     })
 }
 
@@ -114,6 +117,7 @@ pub(crate) fn timing_metadata() -> ModelMetadata {
         vision_sha256: VISION_MODEL_SHA256,
         text_revision: TEXT_MODEL_REVISION,
         text_sha256: TEXT_MODEL_SHA256,
+        tokenizer_revision: TOKENIZER_REVISION,
         tokenizer_sha256: TOKENIZER_SHA256,
     }
 }

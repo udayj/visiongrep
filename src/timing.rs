@@ -64,6 +64,7 @@ pub(crate) struct ModelMetadata {
     pub(crate) vision_sha256: &'static str,
     pub(crate) text_revision: &'static str,
     pub(crate) text_sha256: &'static str,
+    pub(crate) tokenizer_revision: &'static str,
     pub(crate) tokenizer_sha256: &'static str,
 }
 
@@ -321,6 +322,7 @@ mod tests {
             vision_sha256: "a",
             text_revision: "text",
             text_sha256: "b",
+            tokenizer_revision: "tokenizer",
             tokenizer_sha256: "c",
         }
     }

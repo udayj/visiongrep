@@ -6,6 +6,7 @@ mod embedding;
 mod error;
 mod index;
 mod model;
+mod pillow_resize;
 mod ranking;
 mod timing;
 

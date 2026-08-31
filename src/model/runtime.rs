@@ -11,7 +11,7 @@ use crate::error::VisionGrepError;
 use crate::timing::{Phase, TimingRecorder};
 
 const TEXT_TOKENS: usize = 77;
-const PAD_TOKEN_ID: u32 = 1;
+const PAD_TOKEN_ID: u32 = 0;
 const PAD_TOKEN: &str = "<|endoftext|>";
 
 pub(crate) struct VisionSession {
@@ -76,12 +76,11 @@ impl TextSession {
         timing: &mut TimingRecorder,
     ) -> Result<Vec<f32>, VisionGrepError> {
         let tokenization_started = timing.start();
-        let (input_ids, attention_mask) = tokenize(query, &mut self.tokenizer)?;
+        let input_ids = tokenize(query, &mut self.tokenizer)?;
         timing.record(Phase::TextTokenization, tokenization_started);
         let input_ids = TensorRef::from_array_view(&input_ids)?;
-        let attention_mask = TensorRef::from_array_view(&attention_mask)?;
         let inference_started = timing.start();
-        let outputs = self.session.run(ort::inputs![input_ids, attention_mask])?;
+        let outputs = self.session.run(ort::inputs![input_ids])?;
         let mut embeddings = extract_embeddings(&outputs, 1)?;
         let embedding = embeddings.remove(0);
         timing.record(Phase::TextInference, inference_started);
@@ -92,7 +91,7 @@ impl TextSession {
 fn tokenize(
     query: &str,
     tokenizer: &mut tokenizers::Tokenizer,
-) -> Result<(Array2<i64>, Array2<i64>), VisionGrepError> {
+) -> Result<Array2<i64>, VisionGrepError> {
     configure_tokenizer(tokenizer).map_err(|source| VisionGrepError::TokenizerEncode {
         query: query.to_owned(),
         source,
@@ -110,24 +109,16 @@ fn tokenize(
         .iter()
         .map(|id| i64::from(*id))
         .collect::<Vec<_>>();
-    let mask = encoding
-        .get_attention_mask()
-        .iter()
-        .map(|id| i64::from(*id))
-        .collect::<Vec<_>>();
-
-    Array2::from_shape_vec((1, TEXT_TOKENS), ids)
-        .and_then(|ids| Array2::from_shape_vec((1, TEXT_TOKENS), mask).map(|mask| (ids, mask)))
-        .map_err(|source| {
-            VisionGrepError::Io(std::io::Error::other(format!(
-                "tokenizer returned unexpected sequence length: {source}"
-            )))
-        })
+    Array2::from_shape_vec((1, TEXT_TOKENS), ids).map_err(|source| {
+        VisionGrepError::Io(std::io::Error::other(format!(
+            "tokenizer returned unexpected sequence length: {source}"
+        )))
+    })
 }
 
 fn configure_tokenizer(tokenizer: &mut tokenizers::Tokenizer) -> Result<(), tokenizers::Error> {
-    // These values mirror the pinned Qdrant/FastEmbed contract: the model configuration supplies
-    // pad ID 1, while the tokenizer configuration names the end-of-text token for padded slots.
+    // OpenCLIP pads with zero after the end-of-text token; the exported text model pools at the
+    // highest token ID and therefore sees the same EOT position as the reference implementation.
     tokenizer.with_padding(Some(PaddingParams {
         strategy: PaddingStrategy::Fixed(TEXT_TOKENS),
         pad_id: PAD_TOKEN_ID,
@@ -198,21 +189,29 @@ mod tests {
     use tokenizers::{Tokenizer, models::bpe::BPE};
 
     use super::*;
+    use crate::embedding::IMAGE_SIZE_USIZE;
 
-    const GOLDEN_VECTORS: &str = include_str!("../../tests/fixtures/clip_text_golden.json");
+    const GOLDEN_VECTORS: &str = include_str!("../../tests/fixtures/datacomp_golden.json");
 
     #[derive(Deserialize)]
     struct GoldenFixture {
-        model_revision: String,
-        model_sha256: String,
-        tokenizer_sha256: String,
+        contract: GoldenContract,
         reference: String,
-        cases: Vec<GoldenCase>,
+        queries: Vec<GoldenCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct GoldenContract {
+        openclip_revision: String,
+        rclip_model_revision: String,
+        textual_onnx_sha256: String,
+        tokenizer_sha256: String,
     }
 
     #[derive(Deserialize)]
     struct GoldenCase {
         query: String,
+        token_ids: Vec<i64>,
         embedding_le_hex: String,
     }
 
@@ -256,10 +255,13 @@ mod tests {
         let ValueType::Tensor { shape, .. } = input.dtype() else {
             panic!("vision model input is not a tensor: {:?}", input.dtype());
         };
-        assert_eq!(&shape[..], &[-1, -1, -1, -1]);
+        assert_eq!(
+            &shape[..],
+            &[-1, 3, IMAGE_SIZE_USIZE as i64, IMAGE_SIZE_USIZE as i64]
+        );
 
-        let single = Array4::<f32>::zeros((1, 3, 224, 224));
-        let batched = Array4::<f32>::zeros((2, 3, 224, 224));
+        let single = Array4::<f32>::zeros((1, 3, IMAGE_SIZE_USIZE, IMAGE_SIZE_USIZE));
+        let batched = Array4::<f32>::zeros((2, 3, IMAGE_SIZE_USIZE, IMAGE_SIZE_USIZE));
 
         let expected = session.run(&single).unwrap();
         let actual = session.run_batch(&batched).unwrap();
@@ -283,9 +285,15 @@ mod tests {
 
         let mut reports = Vec::new();
         for batch_size in [1, 2, 4, 8, 16] {
-            let input = Array4::from_shape_fn((batch_size, 3, 224, 224), |(_, c, y, x)| {
-                ((c * 224 * 224 + y * 224 + x) % 257) as f32 / 128.0 - 1.0
-            });
+            let input = Array4::from_shape_fn(
+                (batch_size, 3, IMAGE_SIZE_USIZE, IMAGE_SIZE_USIZE),
+                |(_, c, y, x)| {
+                    ((c * IMAGE_SIZE_USIZE * IMAGE_SIZE_USIZE + y * IMAGE_SIZE_USIZE + x) % 257)
+                        as f32
+                        / 128.0
+                        - 1.0
+                },
+            );
             let expected = session.run_batch(&input).unwrap();
             assert_eq!(expected.len(), batch_size);
             assert!(expected.windows(2).all(|pair| pair[0] == pair[1]));
@@ -318,26 +326,34 @@ mod tests {
     /// and never initiate a 250 MB download.
     #[test]
     #[ignore = "requires the pinned CLIP text model and tokenizer in the visiongrep cache"]
-    fn text_embeddings_match_qdrant_fastembed_golden_vectors() {
+    fn text_embeddings_match_openclip_golden_vectors() {
         let fixture: GoldenFixture = serde_json::from_str(GOLDEN_VECTORS).unwrap();
         assert_eq!(
-            fixture.model_revision,
-            "48ca1db27cb4063eb311ec2aa7f087a808112876"
+            fixture.contract.openclip_revision,
+            "4afec35ffe57a943d569ff7ee888061830164da8"
         );
         assert_eq!(
-            fixture.model_sha256,
-            "4dbe762b11e36488304471e439cde89da053ad7acaddbf9e096745d142ec8d8b"
+            fixture.contract.rclip_model_revision,
+            "17b9d07433aad73f70d338d8a1c7a4cef83887e0"
         );
         assert_eq!(
-            fixture.tokenizer_sha256,
-            "b68d571997a1f81bf521fb73806740ddb91e4ed6666cb6e996c066bb289cf55b"
+            fixture.contract.textual_onnx_sha256,
+            "ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc"
         );
-        assert!(fixture.reference.contains("Qdrant/FastEmbed"));
+        assert_eq!(
+            fixture.contract.tokenizer_sha256,
+            "924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a"
+        );
+        assert!(fixture.reference.contains("open_clip_torch 3.3.0"));
 
         let paths = crate::model::model_paths().unwrap();
         let mut session = TextSession::load(&paths).unwrap();
         let mut timing = crate::timing::TimingRecorder::disabled(crate::model::timing_metadata());
-        for case in fixture.cases {
+        let mut report_maximum_error = 0.0_f32;
+        let mut report_minimum_cosine = 1.0_f32;
+        for case in fixture.queries {
+            let actual_tokens = tokenize(&case.query, &mut session.tokenizer).unwrap();
+            assert_eq!(actual_tokens.into_raw_vec_and_offset().0, case.token_ids);
             let actual =
                 crate::embedding::embed_text(&case.query, &mut session, &mut timing).unwrap();
             let expected = crate::embedding::NormalizedEmbedding::from_le_bytes(&decode_hex(
@@ -350,12 +366,23 @@ mod tests {
                 .zip(expected.as_slice())
                 .map(|(actual, expected)| (actual - expected).abs())
                 .fold(0.0_f32, f32::max);
+            let cosine = actual.dot(&expected);
+            report_maximum_error = report_maximum_error.max(maximum_error);
+            report_minimum_cosine = report_minimum_cosine.min(cosine);
 
             assert!(
-                maximum_error <= 1e-5,
+                maximum_error <= 1e-4,
                 "query {:?} exceeded the reference tolerance: {maximum_error}",
                 case.query
             );
         }
+        println!(
+            "{}",
+            serde_json::json!({
+                "maximum_absolute_error": report_maximum_error,
+                "minimum_cosine": report_minimum_cosine,
+                "token_ids_exact": true,
+            })
+        );
     }
 }
