@@ -26,8 +26,7 @@ pub(crate) fn resize_rgb(image: &RgbImage, output_width: u32, output_height: u32
         let horizontal = coefficients(image.width(), output_width);
         let mut intermediate = RgbImage::new(output_width, image.height());
         for y in 0..image.height() as usize {
-            for output_x in 0..output_width as usize {
-                let coefficient = &horizontal[output_x];
+            for (output_x, coefficient) in horizontal.iter().enumerate() {
                 let output_index = (y * output_width as usize + output_x) * 3;
                 for channel in 0..3 {
                     let mut sum = ROUNDING;
@@ -49,8 +48,7 @@ pub(crate) fn resize_rgb(image: &RgbImage, output_width: u32, output_height: u32
 
     let vertical = coefficients(image.height(), output_height);
     let mut output = RgbImage::new(output_width, output_height);
-    for output_y in 0..output_height as usize {
-        let coefficient = &vertical[output_y];
+    for (output_y, coefficient) in vertical.iter().enumerate() {
         for x in 0..output_width as usize {
             let output_index = (output_y * output_width as usize + x) * 3;
             for channel in 0..3 {
