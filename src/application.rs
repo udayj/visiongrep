@@ -144,12 +144,13 @@ fn search_with_cache(
     on_event: &mut impl FnMut(SearchEvent),
     timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
-    let reconciliation_started = timing.start();
-    index.remove_stale_entries(files)?;
-    timing.record(Phase::StaleEntryReconciliation, reconciliation_started);
     let detection_started = timing.start();
-    let missing = index.images_needing_embedding(files)?;
+    let plan = index.plan_reconciliation(files)?;
     timing.record(Phase::ChangedMissingImageDetection, detection_started);
+    let reconciliation_started = timing.start();
+    index.apply_reconciliation(&plan)?;
+    timing.record(Phase::StaleEntryReconciliation, reconciliation_started);
+    let missing = plan.missing();
     if !missing.is_empty() {
         timing.set_index_cache_state(CacheState::Changed);
         let paths = model_paths()?;
@@ -160,7 +161,7 @@ fn search_with_cache(
         ingest_into_index(
             root,
             &mut index,
-            &missing,
+            missing,
             &mut vision,
             &mut |event| {
                 on_event(SearchEvent::Index(event));

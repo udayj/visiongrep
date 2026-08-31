@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -37,6 +36,23 @@ pub(crate) struct ImageIndex {
     conn: Connection,
 }
 
+pub(crate) struct ReconciliationPlan {
+    missing: Vec<ImageFile>,
+    stale_paths: Vec<Vec<u8>>,
+}
+
+impl ReconciliationPlan {
+    pub(crate) fn missing(&self) -> &[ImageFile] {
+        &self.missing
+    }
+}
+
+struct CachedImageMetadata {
+    path: Vec<u8>,
+    mtime_ns: i64,
+    size: i64,
+}
+
 /// A complete replacement index that remains invisible until it is verified and installed.
 ///
 /// The temporary file lives beside the active database, so installing it is a same-filesystem
@@ -64,62 +80,89 @@ impl ImageIndex {
         Self::from_connection(conn)
     }
 
-    /// Returns files whose path is absent or whose nanosecond mtime or size no longer matches.
+    /// Plans incremental reconciliation from one ordered cache read and one merge walk.
     ///
-    /// This is intentionally metadata-based; content hashing and rename reuse are not part of the
-    /// current cache contract.
-    pub(crate) fn images_needing_embedding(
+    /// Discovery and cached paths are both ordered by exact native Unix bytes. Content hashing and
+    /// rename reuse are deliberately outside the cache contract; nanosecond mtime and size remain
+    /// the change detector.
+    pub(crate) fn plan_reconciliation(
         &self,
         files: &[ImageFile],
-    ) -> Result<Vec<ImageFile>, VisionGrepError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT mtime_ns, size FROM images WHERE path = ?1")?;
+    ) -> Result<ReconciliationPlan, VisionGrepError> {
+        let cached = self.cached_image_metadata()?;
         let mut missing = Vec::new();
+        let mut stale_paths = Vec::new();
+        let mut discovered_index = 0;
+        let mut cached_index = 0;
 
-        for file in files {
-            let cached: Option<(i64, i64)> = stmt
-                .query_row([file.relative_path.as_os_str().as_bytes()], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })
-                .optional()?;
-
-            if cached != Some((file.mtime_ns, file.size)) {
-                missing.push(file.clone());
+        while let (Some(file), Some(cached_file)) =
+            (files.get(discovered_index), cached.get(cached_index))
+        {
+            match file
+                .relative_path
+                .as_os_str()
+                .as_bytes()
+                .cmp(&cached_file.path)
+            {
+                std::cmp::Ordering::Less => {
+                    missing.push(file.clone());
+                    discovered_index += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if (file.mtime_ns, file.size) != (cached_file.mtime_ns, cached_file.size) {
+                        missing.push(file.clone());
+                    }
+                    discovered_index += 1;
+                    cached_index += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    stale_paths.push(cached_file.path.clone());
+                    cached_index += 1;
+                }
             }
         }
+        missing.extend_from_slice(&files[discovered_index..]);
+        stale_paths.extend(
+            cached[cached_index..]
+                .iter()
+                .map(|cached_file| cached_file.path.clone()),
+        );
 
-        Ok(missing)
+        Ok(ReconciliationPlan {
+            missing,
+            stale_paths,
+        })
     }
 
-    /// Removes cached paths that no longer appear in the current recursive discovery result.
-    pub(crate) fn remove_stale_entries(
+    /// Applies the stale portion of a previously computed reconciliation plan atomically.
+    pub(crate) fn apply_reconciliation(
         &mut self,
-        files: &[ImageFile],
+        plan: &ReconciliationPlan,
     ) -> Result<(), VisionGrepError> {
-        let current_paths = files
-            .iter()
-            .map(|file| file.relative_path.as_os_str().as_bytes().to_vec())
-            .collect::<HashSet<_>>();
-        let cached_paths = {
-            let mut stmt = self.conn.prepare("SELECT path FROM images")?;
-            stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        let stale_paths: Vec<Vec<u8>> = cached_paths
-            .into_iter()
-            .filter(|path| !current_paths.contains(path))
-            .collect();
-
         let transaction = self.conn.transaction()?;
         {
             let mut stmt = transaction.prepare("DELETE FROM images WHERE path = ?1")?;
-            for path in stale_paths {
+            for path in &plan.stale_paths {
                 stmt.execute([path])?;
             }
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    fn cached_image_metadata(&self) -> Result<Vec<CachedImageMetadata>, VisionGrepError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, mtime_ns, size FROM images ORDER BY path")?;
+        stmt.query_map([], |row| {
+            Ok(CachedImageMetadata {
+                path: row.get(0)?,
+                mtime_ns: row.get(1)?,
+                size: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(VisionGrepError::Index)
     }
 
     pub(super) fn apply_updates(
@@ -392,7 +435,13 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].path, PathBuf::from("photos/image.jpg"));
         assert_eq!(records[0].embedding, embedding());
-        assert!(index.images_needing_embedding(&[file]).unwrap().is_empty());
+        assert!(
+            index
+                .plan_reconciliation(&[file])
+                .unwrap()
+                .missing()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -402,18 +451,53 @@ mod tests {
         let renamed_file = image_file(PathBuf::from("new-name.jpg"));
 
         insert(&mut index, &old_file);
-        index
-            .remove_stale_entries(std::slice::from_ref(&renamed_file))
+        let plan = index
+            .plan_reconciliation(std::slice::from_ref(&renamed_file))
             .unwrap();
+        index.apply_reconciliation(&plan).unwrap();
 
         assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
-        assert_eq!(
-            index
-                .images_needing_embedding(&[renamed_file])
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(plan.missing().len(), 1);
+    }
+
+    #[test]
+    fn bulk_reconciliation_preserves_unchanged_and_detects_metadata_changes() {
+        let mut index = ImageIndex::in_memory().unwrap();
+        let unchanged = image_file(PathBuf::from("a.jpg"));
+        let changed = image_file(PathBuf::from("b.jpg"));
+        insert(&mut index, &unchanged);
+        insert(&mut index, &changed);
+        let changed = ImageFile {
+            relative_path: changed.relative_path,
+            mtime_ns: changed.mtime_ns + 1,
+            size: changed.size,
+        };
+
+        let plan = index
+            .plan_reconciliation(&[unchanged, changed.clone()])
+            .unwrap();
+
+        assert_eq!(plan.missing().len(), 1);
+        assert_eq!(plan.missing()[0].relative_path, changed.relative_path);
+        index.apply_reconciliation(&plan).unwrap();
+        assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn bulk_reconciliation_handles_discovered_paths_before_and_after_cached_paths() {
+        let mut index = ImageIndex::in_memory().unwrap();
+        let cached = image_file(PathBuf::from("middle.jpg"));
+        insert(&mut index, &cached);
+        let first = image_file(PathBuf::from("first.jpg"));
+        let last = image_file(PathBuf::from("z-last.jpg"));
+
+        let plan = index
+            .plan_reconciliation(&[first.clone(), cached, last.clone()])
+            .unwrap();
+
+        assert_eq!(plan.missing().len(), 2);
+        assert_eq!(plan.missing()[0].relative_path, first.relative_path);
+        assert_eq!(plan.missing()[1].relative_path, last.relative_path);
     }
 
     #[test]
