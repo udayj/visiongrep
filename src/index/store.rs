@@ -593,6 +593,7 @@ impl StagedImageIndex {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::Instant;
 
     use super::*;
 
@@ -630,6 +631,56 @@ mod tests {
                 embedding: embedding(),
             }])
             .unwrap();
+    }
+
+    fn populate_reconciliation_benchmark(index: &mut ImageIndex, files: &[ImageFile]) {
+        let transaction = index.conn.transaction().unwrap();
+        let bytes = embedding().to_le_bytes();
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO images (path, mtime_ns, size, embedding)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .unwrap();
+            for file in files {
+                statement
+                    .execute(params![
+                        file.relative_path.as_os_str().as_bytes(),
+                        file.mtime_ns,
+                        file.size,
+                        &bytes,
+                    ])
+                    .unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+    }
+
+    fn per_file_query_changed_count(index: &ImageIndex, files: &[ImageFile]) -> usize {
+        let mut statement = index
+            .conn
+            .prepare("SELECT mtime_ns, size FROM images WHERE path = ?1")
+            .unwrap();
+        files
+            .iter()
+            .filter(|file| {
+                let cached = statement
+                    .query_row([file.relative_path.as_os_str().as_bytes()], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                    })
+                    .optional()
+                    .unwrap();
+                cached != Some((file.mtime_ns, file.size))
+            })
+            .count()
+    }
+
+    fn duration_summary(mut samples: Vec<f64>) -> serde_json::Value {
+        samples.sort_by(f64::total_cmp);
+        let median = samples[samples.len() / 2];
+        let p95 = samples[(samples.len() * 95).div_ceil(100) - 1];
+        serde_json::json!({"samples": samples.len(), "median_ms": median, "p95_ms": p95})
     }
 
     #[test]
@@ -717,6 +768,50 @@ mod tests {
         assert_eq!(plan.missing().len(), 2);
         assert_eq!(plan.missing()[0].relative_path, first.relative_path);
         assert_eq!(plan.missing()[1].relative_path, last.relative_path);
+    }
+
+    #[test]
+    #[ignore = "release benchmark for bulk index reconciliation"]
+    fn reconciliation_performance_matrix() {
+        let mut results = Vec::new();
+        for corpus_size in [10_000, 100_000] {
+            let files = (0..corpus_size)
+                .map(|number| image_file(PathBuf::from(format!("image-{number:06}.jpg"))))
+                .collect::<Vec<_>>();
+            let mut changed = files.clone();
+            for file in changed.iter_mut().step_by(100) {
+                file.mtime_ns += 1;
+            }
+
+            let mut index = ImageIndex::in_memory().unwrap();
+            populate_reconciliation_benchmark(&mut index, &files);
+            for (scenario, discovered, expected_changed) in [
+                ("unchanged", &files, 0),
+                ("one_percent_changed", &changed, corpus_size / 100),
+            ] {
+                let mut per_file_samples = Vec::new();
+                let mut bulk_samples = Vec::new();
+                for _ in 0..21 {
+                    let started = Instant::now();
+                    let actual = per_file_query_changed_count(&index, discovered);
+                    per_file_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+                    assert_eq!(actual, expected_changed);
+
+                    let started = Instant::now();
+                    let plan = index.plan_reconciliation(discovered).unwrap();
+                    bulk_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+                    assert_eq!(plan.missing().len(), expected_changed);
+                    assert!(plan.stale_paths.is_empty());
+                }
+                results.push(serde_json::json!({
+                    "corpus_size": corpus_size,
+                    "scenario": scenario,
+                    "per_file_queries": duration_summary(per_file_samples),
+                    "ordered_bulk_pass": duration_summary(bulk_samples),
+                }));
+            }
+        }
+        println!("{}", serde_json::to_string(&results).unwrap());
     }
 
     #[test]
