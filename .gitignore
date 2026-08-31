@@ -2,3 +2,6 @@
 .visiongrep.db
 .DS_Store
 test1/
+__pycache__/
+*.pyc
+/benchmarks/work/
