@@ -13,7 +13,14 @@ import sys
 import time
 from pathlib import Path
 
-from common import corpus_image_count, environment_metadata, load_queries, read_json, write_json
+from common import (
+    corpus_image_count,
+    environment_metadata,
+    load_queries,
+    peak_rss_kib,
+    read_json,
+    write_json,
+)
 
 RCLIP_COMMIT = "3dcec2de5e23311473f6fb6433e602aa4f4ca812"
 VISUAL_SHA256 = "3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c"
@@ -30,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus-manifest", required=True, type=Path)
     parser.add_argument("--query-manifest", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--system", default="rclip")
     parser.add_argument("--top", default=10, type=int)
     return parser.parse_args()
 
@@ -121,7 +129,7 @@ def main() -> None:
     report = {
         "schema_version": 1,
         "system": {
-            "name": "rclip",
+            "name": args.system,
             "version": "3.3.0",
             "commit": RCLIP_COMMIT,
             "model_contract": "laion-clip-vit-b-32-256-datacomp-s34b-b86k",
@@ -132,7 +140,7 @@ def main() -> None:
             "first_index_and_query_ms": indexing_ms,
             "end_to_end_first_index_images_per_second": corpus_size / (indexing_ms / 1000.0),
             "cached_query_ms": cached_latency_ms,
-            "peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            "peak_rss_kib": peak_rss_kib(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
             "index_size_bytes": database_path.stat().st_size,
             "corpus_size": corpus_size,
         },

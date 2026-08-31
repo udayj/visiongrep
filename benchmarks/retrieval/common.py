@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import platform
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -55,12 +57,19 @@ def environment_metadata() -> dict[str, Any]:
         total_memory = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
     except (AttributeError, OSError, ValueError):
         pass
+    packages = {}
+    for distribution in ("numpy", "onnxruntime", "Pillow", "coremltools"):
+        try:
+            packages[distribution] = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            pass
     return {
         "os": platform.platform(),
         "architecture": platform.machine(),
         "logical_cpu_count": os.cpu_count(),
         "total_memory_bytes": total_memory,
         "python": platform.python_version(),
+        "packages": packages,
     }
 
 
@@ -69,6 +78,10 @@ def corpus_image_count(path: Path) -> int:
         entry.is_file() and entry.suffix.lower() in SUPPORTED_CORPUS_SUFFIXES
         for entry in path.iterdir()
     )
+
+
+def peak_rss_kib(raw_value: int) -> int:
+    return raw_value // 1024 if sys.platform == "darwin" else raw_value
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:

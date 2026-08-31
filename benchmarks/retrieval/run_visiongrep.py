@@ -12,7 +12,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from common import corpus_image_count, environment_metadata, load_queries, read_json, write_json
+from common import (
+    corpus_image_count,
+    environment_metadata,
+    load_queries,
+    peak_rss_kib,
+    read_json,
+    write_json,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -125,7 +132,9 @@ def main() -> None:
             "first_index_and_query_ms": indexing_ms,
             "end_to_end_first_index_images_per_second": corpus_size / (indexing_ms / 1000.0),
             "cached_query_ms": cached_latency_ms,
-            "peak_rss_kib": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+            "peak_rss_kib": peak_rss_kib(
+                resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+            ),
             "index_size_bytes": index_path.stat().st_size,
             "corpus_size": corpus_size,
         },
