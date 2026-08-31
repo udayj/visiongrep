@@ -1,6 +1,7 @@
 use crate::embedding::{NormalizedEmbedding, embed_image};
 use crate::error::VisionGrepError;
 use crate::model::VisionSession;
+use crate::timing::{Phase, TimingRecorder};
 
 use super::scan::{ImageFile, SearchRoot};
 use super::store::{ImageIndex, ImageRecord, ImageUpdate};
@@ -25,25 +26,29 @@ pub(crate) fn ingest_into_index(
     files: &[ImageFile],
     session: &mut VisionSession,
     on_event: &mut impl FnMut(IngestEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
     report_started(files.len(), on_event)?;
     let result = (|| {
         for files in files.chunks(INDEX_BATCH_SIZE) {
             let mut updates = Vec::with_capacity(files.len());
             for file in files {
-                let update = match embed_image_with_skip_policy(root, file, session, on_event)? {
-                    Some(embedding) => ImageUpdate::Upsert {
-                        file: file.clone(),
-                        embedding,
-                    },
-                    None => ImageUpdate::Delete {
-                        relative_path: file.relative_path.clone(),
-                    },
-                };
+                let update =
+                    match embed_image_with_skip_policy(root, file, session, on_event, timing)? {
+                        Some(embedding) => ImageUpdate::Upsert {
+                            file: file.clone(),
+                            embedding,
+                        },
+                        None => ImageUpdate::Delete {
+                            relative_path: file.relative_path.clone(),
+                        },
+                    };
                 updates.push(update);
                 on_event(IngestEvent::ImageProcessed);
             }
+            let writes_started = timing.start();
             index.apply_updates(updates)?;
+            timing.record(Phase::DatabaseWrites, writes_started);
         }
         Ok(())
     })();
@@ -57,12 +62,15 @@ pub(crate) fn embed_images(
     files: &[ImageFile],
     session: &mut VisionSession,
     on_event: &mut impl FnMut(IngestEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<Vec<ImageRecord>, VisionGrepError> {
     report_started(files.len(), on_event)?;
     let result = (|| {
         let mut records = Vec::with_capacity(files.len());
         for file in files {
-            if let Some(embedding) = embed_image_with_skip_policy(root, file, session, on_event)? {
+            if let Some(embedding) =
+                embed_image_with_skip_policy(root, file, session, on_event, timing)?
+            {
                 records.push(ImageRecord {
                     path: root.display_image_path(&file.relative_path),
                     embedding,
@@ -93,8 +101,9 @@ fn embed_image_with_skip_policy(
     file: &ImageFile,
     session: &mut VisionSession,
     on_event: &mut impl FnMut(IngestEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<Option<NormalizedEmbedding>, VisionGrepError> {
-    match embed_image(&root.image_path(&file.relative_path), session) {
+    match embed_image(&root.image_path(&file.relative_path), session, timing) {
         Ok(embedding) => Ok(Some(embedding)),
         Err(
             error @ (VisionGrepError::ImageDecode { .. }

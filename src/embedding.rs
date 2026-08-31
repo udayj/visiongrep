@@ -5,6 +5,7 @@ use ndarray::Array4;
 
 use crate::error::{EmbeddingError, VisionGrepError};
 use crate::model::{TextSession, VisionSession};
+use crate::timing::{Phase, TimingRecorder};
 
 const IMAGE_SIZE: u32 = 224;
 const IMAGE_SIZE_USIZE: usize = 224;
@@ -90,9 +91,12 @@ impl NormalizedEmbedding {
 pub(crate) fn embed_image(
     path: &Path,
     session: &mut VisionSession,
+    timing: &mut TimingRecorder,
 ) -> Result<NormalizedEmbedding, VisionGrepError> {
-    let input = preprocess_image(path)?;
+    let input = preprocess_image(path, timing)?;
+    let inference_started = timing.start();
     let embedding = session.run(&input)?;
+    timing.record(Phase::VisionInference, inference_started);
     NormalizedEmbedding::from_model_output(embedding).map_err(|source| {
         VisionGrepError::InvalidModelEmbedding {
             kind: "image",
@@ -105,8 +109,9 @@ pub(crate) fn embed_image(
 pub(crate) fn embed_text(
     query: &str,
     session: &mut TextSession,
+    timing: &mut TimingRecorder,
 ) -> Result<NormalizedEmbedding, VisionGrepError> {
-    let embedding = session.run(query)?;
+    let embedding = session.run(query, timing)?;
     NormalizedEmbedding::from_model_output(embedding).map_err(|source| {
         VisionGrepError::InvalidModelEmbedding {
             kind: "text",
@@ -143,9 +148,17 @@ fn l2_norm(values: &[f32]) -> f32 {
     values.iter().map(|value| value * value).sum::<f32>().sqrt()
 }
 
-fn preprocess_image(path: &Path) -> Result<Array4<f32>, VisionGrepError> {
+fn preprocess_image(
+    path: &Path,
+    timing: &mut TimingRecorder,
+) -> Result<Array4<f32>, VisionGrepError> {
+    let decoding_started = timing.start();
     let image = load_image(path)?;
-    Ok(preprocess_pixels(image))
+    timing.record(Phase::ImageDecoding, decoding_started);
+    let preprocessing_started = timing.start();
+    let input = preprocess_pixels(image);
+    timing.record(Phase::ImagePreprocessing, preprocessing_started);
+    Ok(input)
 }
 
 /// Decodes an image only after checking its declared resource requirements and applies orientation.

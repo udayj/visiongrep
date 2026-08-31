@@ -145,6 +145,20 @@ pub(crate) enum VisionGrepError {
         source: serde_json::Error,
     },
 
+    #[error("failed to serialize timing JSON: {source}")]
+    TimingSerialize {
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error("failed while {operation} timing output at {path}: {source}")]
+    TimingFile {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("cannot represent non-UTF-8 path in JSON: {path}")]
     NonUtf8JsonPath { path: PathBuf },
 

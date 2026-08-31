@@ -8,6 +8,7 @@ use tokenizers::{PaddingParams, PaddingStrategy, TruncationParams};
 use super::artifacts::ModelPaths;
 use crate::embedding::EMBEDDING_DIM;
 use crate::error::VisionGrepError;
+use crate::timing::{Phase, TimingRecorder};
 
 const TEXT_TOKENS: usize = 77;
 const PAD_TOKEN_ID: u32 = 1;
@@ -53,12 +54,21 @@ impl TextSession {
     }
 
     /// Tokenizes according to the model's fixed input contract and performs one text inference.
-    pub(crate) fn run(&mut self, query: &str) -> Result<Vec<f32>, VisionGrepError> {
+    pub(crate) fn run(
+        &mut self,
+        query: &str,
+        timing: &mut TimingRecorder,
+    ) -> Result<Vec<f32>, VisionGrepError> {
+        let tokenization_started = timing.start();
         let (input_ids, attention_mask) = tokenize(query, &mut self.tokenizer)?;
+        timing.record(Phase::TextTokenization, tokenization_started);
         let input_ids = TensorRef::from_array_view(&input_ids)?;
         let attention_mask = TensorRef::from_array_view(&attention_mask)?;
+        let inference_started = timing.start();
         let outputs = self.session.run(ort::inputs![input_ids, attention_mask])?;
-        extract_embedding(&outputs)
+        let embedding = extract_embedding(&outputs)?;
+        timing.record(Phase::TextInference, inference_started);
+        Ok(embedding)
     }
 }
 
@@ -231,8 +241,10 @@ mod tests {
 
         let paths = crate::model::model_paths().unwrap();
         let mut session = TextSession::load(&paths).unwrap();
+        let mut timing = crate::timing::TimingRecorder::disabled(crate::model::timing_metadata());
         for case in fixture.cases {
-            let actual = crate::embedding::embed_text(&case.query, &mut session).unwrap();
+            let actual =
+                crate::embedding::embed_text(&case.query, &mut session, &mut timing).unwrap();
             let expected = crate::embedding::NormalizedEmbedding::from_le_bytes(&decode_hex(
                 &case.embedding_le_hex,
             ))

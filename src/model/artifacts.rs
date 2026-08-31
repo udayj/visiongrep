@@ -6,7 +6,11 @@ use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
 use crate::error::VisionGrepError;
+use crate::timing::{ModelMetadata, Phase, TimingRecorder};
 
+const MODEL_CONTRACT: &str = "qdrant-clip-vit-b-32-224-v1";
+const VISION_MODEL_REVISION: &str = "a636590e595dbbd798647c9dd4550d5652fba969";
+const TEXT_MODEL_REVISION: &str = "48ca1db27cb4063eb311ec2aa7f087a808112876";
 const VISION_MODEL_URL: &str = "https://huggingface.co/Qdrant/clip-ViT-B-32-vision/resolve/a636590e595dbbd798647c9dd4550d5652fba969/model.onnx";
 const TEXT_MODEL_URL: &str = "https://huggingface.co/Qdrant/clip-ViT-B-32-text/resolve/48ca1db27cb4063eb311ec2aa7f087a808112876/model.onnx";
 const TOKENIZER_URL: &str = "https://huggingface.co/Qdrant/clip-ViT-B-32-text/resolve/48ca1db27cb4063eb311ec2aa7f087a808112876/tokenizer.json";
@@ -45,9 +49,21 @@ pub(crate) fn model_paths() -> Result<ModelPaths, VisionGrepError> {
     })
 }
 
+pub(crate) fn timing_metadata() -> ModelMetadata {
+    ModelMetadata {
+        contract: MODEL_CONTRACT,
+        vision_revision: VISION_MODEL_REVISION,
+        vision_sha256: VISION_MODEL_SHA256,
+        text_revision: TEXT_MODEL_REVISION,
+        text_sha256: TEXT_MODEL_SHA256,
+        tokenizer_sha256: TOKENIZER_SHA256,
+    }
+}
+
 pub(crate) fn ensure_vision_artifacts(
     paths: &ModelPaths,
     on_event: &mut impl FnMut(ArtifactEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
     ensure_artifact(
         "CLIP vision model",
@@ -55,12 +71,14 @@ pub(crate) fn ensure_vision_artifacts(
         &paths.vision_model,
         VISION_MODEL_SHA256,
         on_event,
+        timing,
     )
 }
 
 pub(crate) fn ensure_text_artifacts(
     paths: &ModelPaths,
     on_event: &mut impl FnMut(ArtifactEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
     ensure_artifact(
         "CLIP text model",
@@ -68,6 +86,7 @@ pub(crate) fn ensure_text_artifacts(
         &paths.text_model,
         TEXT_MODEL_SHA256,
         on_event,
+        timing,
     )?;
     ensure_artifact(
         "CLIP tokenizer",
@@ -75,6 +94,7 @@ pub(crate) fn ensure_text_artifacts(
         &paths.tokenizer,
         TOKENIZER_SHA256,
         on_event,
+        timing,
     )?;
 
     Ok(())
@@ -92,12 +112,19 @@ fn ensure_artifact(
     destination: &Path,
     expected_sha256: &str,
     on_event: &mut impl FnMut(ArtifactEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
-    if destination.exists() && sha256_file(destination)? == expected_sha256 {
+    let validation_started = timing.start();
+    let valid = !destination.exists() || sha256_file(destination)? == expected_sha256;
+    timing.record(Phase::ArtifactValidation, validation_started);
+    if destination.exists() && valid {
         return Ok(());
     }
 
-    download_artifact(artifact, url, destination, expected_sha256, on_event)
+    let download_started = timing.start();
+    let result = download_artifact(artifact, url, destination, expected_sha256, on_event);
+    timing.record(Phase::ArtifactDownload, download_started);
+    result
 }
 
 /// Streams an artifact into a sibling temporary file before replacing the final destination.
@@ -284,6 +311,7 @@ mod tests {
         let destination = directory.path().join("artifact.bin");
         fs::write(&destination, b"verified artifact").unwrap();
         let mut events = Vec::new();
+        let mut timing = TimingRecorder::disabled(timing_metadata());
 
         ensure_artifact(
             "test artifact",
@@ -291,6 +319,7 @@ mod tests {
             &destination,
             &sha256(b"verified artifact"),
             &mut |event| events.push(event),
+            &mut timing,
         )
         .unwrap();
 

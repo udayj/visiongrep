@@ -5,6 +5,7 @@ use clap::Parser;
 use super::terminal::OutputFormat;
 use crate::application::{CacheMode, SearchRequest};
 use crate::ranking::DEFAULT_SIMILARITY_THRESHOLD;
+use crate::timing::TimingDestination;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -54,12 +55,27 @@ pub(crate) struct Cli {
 
     #[arg(short = 'q', long = "quiet", help = "Suppress progress output")]
     quiet: bool,
+
+    #[arg(
+        long = "timing",
+        help = "Write one machine-readable phase timing report to stderr"
+    )]
+    timing: bool,
+
+    #[arg(
+        long = "timing-file",
+        value_name = "PATH",
+        requires = "timing",
+        help = "Write the --timing report to PATH instead of stderr"
+    )]
+    timing_file: Option<PathBuf>,
 }
 
 pub(crate) struct Command {
     pub(crate) request: SearchRequest,
     pub(crate) output_format: OutputFormat,
     pub(crate) quiet: bool,
+    pub(crate) timing_destination: Option<TimingDestination>,
 }
 
 impl Cli {
@@ -91,6 +107,9 @@ impl Cli {
             ),
             output_format,
             quiet: self.quiet,
+            timing_destination: self
+                .timing
+                .then(|| TimingDestination::new(self.timing_file)),
         }
     }
 }
@@ -167,5 +186,19 @@ mod tests {
             cli.into_command().output_format,
             OutputFormat::PathsNull
         ));
+    }
+
+    #[test]
+    fn timing_file_requires_timing() {
+        assert!(
+            Cli::try_parse_from([
+                "visiongrep",
+                "robot",
+                "photos",
+                "--timing-file",
+                "timing.json",
+            ])
+            .is_err()
+        );
     }
 }

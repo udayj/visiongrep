@@ -11,6 +11,7 @@ use crate::model::{
     ensure_vision_artifacts, model_paths,
 };
 use crate::ranking::{Ranker, SearchResult};
+use crate::timing::{CacheState, Phase, TimingRecorder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CacheMode {
@@ -54,18 +55,39 @@ pub(crate) enum SearchEvent {
 pub(crate) fn search(
     request: &SearchRequest,
     on_event: &mut impl FnMut(SearchEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
+    let path_started = timing.start();
     validate_search_path(&request.path)?;
     let root = SearchRoot::resolve(&request.path)?;
+    timing.record(Phase::PathValidationCanonicalization, path_started);
+
+    let discovery_started = timing.start();
     let files = discover_images(&root)?;
+    timing.record(Phase::RecursiveDiscoveryMetadata, discovery_started);
+    timing.set_corpus_size(files.len());
 
     match request.cache_mode {
-        CacheMode::Disabled => search_without_cache(&root, &files, request, on_event),
-        CacheMode::Use => {
-            let index = ImageIndex::open(root.filesystem_path())?;
-            search_with_cache(&root, &files, request, index, on_event)
+        CacheMode::Disabled => {
+            timing.set_index_cache_state(CacheState::NotApplicable);
+            timing.set_query_cache_state(CacheState::NotApplicable);
+            search_without_cache(&root, &files, request, on_event, timing)
         }
-        CacheMode::Reindex => reindex_and_search(&root, &files, request, on_event),
+        CacheMode::Use => {
+            timing.set_index_cache_state(if ImageIndex::exists(root.filesystem_path()) {
+                CacheState::Hit
+            } else {
+                CacheState::Absent
+            });
+            let index_started = timing.start();
+            let index = ImageIndex::open(root.filesystem_path())?;
+            timing.record(Phase::IndexOpenSchemaInitialization, index_started);
+            search_with_cache(&root, &files, request, index, on_event, timing)
+        }
+        CacheMode::Reindex => {
+            timing.set_index_cache_state(CacheState::Reindexed);
+            reindex_and_search(&root, &files, request, on_event, timing)
+        }
     }
 }
 
@@ -78,25 +100,36 @@ fn search_without_cache(
     files: &[ImageFile],
     request: &SearchRequest,
     on_event: &mut impl FnMut(SearchEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
     if files.is_empty() {
         return Ok(Vec::new());
     }
 
     let paths = model_paths()?;
-    ensure_vision(&paths, on_event)?;
+    ensure_vision(&paths, on_event, timing)?;
+    let session_started = timing.start();
     let mut vision = VisionSession::load(&paths)?;
-    let image_records = embed_images(root, files, &mut vision, &mut |event| {
-        on_event(SearchEvent::Index(event));
-    })?;
+    timing.record(Phase::ModelSessionConstruction, session_started);
+    let image_records = embed_images(
+        root,
+        files,
+        &mut vision,
+        &mut |event| {
+            on_event(SearchEvent::Index(event));
+        },
+        timing,
+    )?;
     if image_records.is_empty() {
         return Ok(Vec::new());
     }
 
-    ensure_text(&paths, on_event)?;
+    ensure_text(&paths, on_event, timing)?;
+    let session_started = timing.start();
     let mut text = TextSession::load(&paths)?;
-    let query_embedding = embed_text(&request.query, &mut text)?;
-    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records))
+    timing.record(Phase::ModelSessionConstruction, session_started);
+    let query_embedding = embed_text(&request.query, &mut text, timing)?;
+    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records, timing))
 }
 
 /// Reconciles the on-disk index and loads only the model sessions required by the current state.
@@ -109,19 +142,34 @@ fn search_with_cache(
     request: &SearchRequest,
     mut index: ImageIndex,
     on_event: &mut impl FnMut(SearchEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
+    let reconciliation_started = timing.start();
     index.remove_stale_entries(files)?;
+    timing.record(Phase::StaleEntryReconciliation, reconciliation_started);
+    let detection_started = timing.start();
     let missing = index.images_needing_embedding(files)?;
+    timing.record(Phase::ChangedMissingImageDetection, detection_started);
     if !missing.is_empty() {
+        timing.set_index_cache_state(CacheState::Changed);
         let paths = model_paths()?;
-        ensure_vision(&paths, on_event)?;
+        ensure_vision(&paths, on_event, timing)?;
+        let session_started = timing.start();
         let mut vision = VisionSession::load(&paths)?;
-        ingest_into_index(root, &mut index, &missing, &mut vision, &mut |event| {
-            on_event(SearchEvent::Index(event));
-        })?;
+        timing.record(Phase::ModelSessionConstruction, session_started);
+        ingest_into_index(
+            root,
+            &mut index,
+            &missing,
+            &mut vision,
+            &mut |event| {
+                on_event(SearchEvent::Index(event));
+            },
+            timing,
+        )?;
     }
 
-    search_index(root, request, &mut index, on_event)
+    search_index(root, request, &mut index, on_event, timing)
 }
 
 /// Builds a complete sibling database and exposes it only after every image was processed.
@@ -130,28 +178,43 @@ fn reindex_and_search(
     files: &[ImageFile],
     request: &SearchRequest,
     on_event: &mut impl FnMut(SearchEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
     // Opening the active database first lets SQLite recover any hot journal before its main file is
     // eventually replaced. The connection is kept alive while the sibling index is constructed.
+    let index_started = timing.start();
     let active_index = ImageIndex::open(root.filesystem_path())?;
+    timing.record(Phase::IndexOpenSchemaInitialization, index_started);
     let mut vision = if files.is_empty() {
         None
     } else {
         let paths = model_paths()?;
-        ensure_vision(&paths, on_event)?;
-        Some(VisionSession::load(&paths)?)
+        ensure_vision(&paths, on_event, timing)?;
+        let session_started = timing.start();
+        let session = VisionSession::load(&paths)?;
+        timing.record(Phase::ModelSessionConstruction, session_started);
+        Some(session)
     };
+    let staged_started = timing.start();
     let mut staged = StagedImageIndex::create(root.filesystem_path())?;
+    timing.record(Phase::IndexOpenSchemaInitialization, staged_started);
 
     if let Some(vision) = &mut vision {
-        ingest_into_index(root, staged.index_mut(), files, vision, &mut |event| {
-            on_event(SearchEvent::Index(event));
-        })?;
+        ingest_into_index(
+            root,
+            staged.index_mut(),
+            files,
+            vision,
+            &mut |event| {
+                on_event(SearchEvent::Index(event));
+            },
+            timing,
+        )?;
     }
 
     // Finish all fallible model work against the staged database. Once installation starts, the
     // rebuild is complete and this invocation no longer needs to reopen the replacement.
-    let results = search_index(root, request, staged.index_mut(), on_event)?;
+    let results = search_index(root, request, staged.index_mut(), on_event, timing)?;
     drop(active_index);
     staged.install()?;
     Ok(results)
@@ -162,43 +225,64 @@ fn search_index(
     request: &SearchRequest,
     index: &mut ImageIndex,
     on_event: &mut impl FnMut(SearchEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
+    let loading_started = timing.start();
     let image_records = index.all_embeddings(root.display_path())?;
+    timing.record(Phase::CachedVectorLoadingDeserialization, loading_started);
     if image_records.is_empty() {
         return Ok(Vec::new());
     }
 
     let query_embedding = match index.query_embedding(&request.query)? {
-        Some(embedding) => embedding,
+        Some(embedding) => {
+            timing.set_query_cache_state(CacheState::Hit);
+            embedding
+        }
         None => {
+            timing.set_query_cache_state(CacheState::Miss);
             let paths = model_paths()?;
-            ensure_text(&paths, on_event)?;
+            ensure_text(&paths, on_event, timing)?;
+            let session_started = timing.start();
             let mut text = TextSession::load(&paths)?;
-            let embedding = embed_text(&request.query, &mut text)?;
+            timing.record(Phase::ModelSessionConstruction, session_started);
+            let embedding = embed_text(&request.query, &mut text, timing)?;
+            let writes_started = timing.start();
             index.upsert_query_embedding(&request.query, &embedding)?;
+            timing.record(Phase::DatabaseWrites, writes_started);
             embedding
         }
     };
 
-    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records))
+    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records, timing))
 }
 
 fn ensure_vision(
     paths: &ModelPaths,
     on_event: &mut impl FnMut(SearchEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
-    ensure_vision_artifacts(paths, &mut |event| {
-        on_event(SearchEvent::Artifact(event));
-    })
+    ensure_vision_artifacts(
+        paths,
+        &mut |event| {
+            on_event(SearchEvent::Artifact(event));
+        },
+        timing,
+    )
 }
 
 fn ensure_text(
     paths: &ModelPaths,
     on_event: &mut impl FnMut(SearchEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
-    ensure_text_artifacts(paths, &mut |event| {
-        on_event(SearchEvent::Artifact(event));
-    })
+    ensure_text_artifacts(
+        paths,
+        &mut |event| {
+            on_event(SearchEvent::Artifact(event));
+        },
+        timing,
+    )
 }
 
 fn validate_search_path(path: &Path) -> Result<(), VisionGrepError> {

@@ -49,6 +49,10 @@ pub(crate) struct StagedImageIndex {
 }
 
 impl ImageIndex {
+    pub(crate) fn exists(root: &Path) -> bool {
+        root.join(INDEX_FILE_NAME).exists()
+    }
+
     pub(crate) fn open(root: &Path) -> Result<Self, VisionGrepError> {
         let conn = Connection::open(root.join(INDEX_FILE_NAME))?;
         Self::from_connection(conn)

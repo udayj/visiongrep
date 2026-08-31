@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::embedding::NormalizedEmbedding;
 use crate::index::ImageRecord;
+use crate::timing::{Phase, TimingRecorder};
 
 pub(crate) const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.25;
 
@@ -34,7 +35,12 @@ impl<'a> Ranker<'a> {
     ///
     /// Score ties are resolved by path so repeated searches over the same index produce stable
     /// output.
-    pub(crate) fn rank(&self, images: Vec<ImageRecord>) -> Vec<SearchResult> {
+    pub(crate) fn rank(
+        &self,
+        images: Vec<ImageRecord>,
+        timing: &mut TimingRecorder,
+    ) -> Vec<SearchResult> {
+        let scoring_started = timing.start();
         let mut results = Vec::with_capacity(images.len().min(self.top));
         for image in images {
             let score = cosine_similarity(self.query_embedding, &image.embedding);
@@ -45,7 +51,9 @@ impl<'a> Ranker<'a> {
                 });
             }
         }
+        timing.record(Phase::SimilarityScoring, scoring_started);
 
+        let selection_started = timing.start();
         results.sort_by(|left, right| {
             right
                 .score
@@ -53,6 +61,7 @@ impl<'a> Ranker<'a> {
                 .then_with(|| left.path.cmp(&right.path))
         });
         results.truncate(self.top);
+        timing.record(Phase::TopKSelection, selection_started);
         results
     }
 }
@@ -86,20 +95,24 @@ mod tests {
     fn ranking_filters_sorts_and_truncates() {
         let query = embedding(1.0, 0.0);
         let ranker = Ranker::new(&query, 2, 0.5);
-        let results = ranker.rank(vec![
-            ImageRecord {
-                path: PathBuf::from("b.jpg"),
-                embedding: embedding(0.7, (1.0_f32 - 0.7_f32.powi(2)).sqrt()),
-            },
-            ImageRecord {
-                path: PathBuf::from("a.jpg"),
-                embedding: embedding(0.9, (1.0_f32 - 0.9_f32.powi(2)).sqrt()),
-            },
-            ImageRecord {
-                path: PathBuf::from("c.jpg"),
-                embedding: embedding(0.4, (1.0_f32 - 0.4_f32.powi(2)).sqrt()),
-            },
-        ]);
+        let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
+        let results = ranker.rank(
+            vec![
+                ImageRecord {
+                    path: PathBuf::from("b.jpg"),
+                    embedding: embedding(0.7, (1.0_f32 - 0.7_f32.powi(2)).sqrt()),
+                },
+                ImageRecord {
+                    path: PathBuf::from("a.jpg"),
+                    embedding: embedding(0.9, (1.0_f32 - 0.9_f32.powi(2)).sqrt()),
+                },
+                ImageRecord {
+                    path: PathBuf::from("c.jpg"),
+                    embedding: embedding(0.4, (1.0_f32 - 0.4_f32.powi(2)).sqrt()),
+                },
+            ],
+            &mut timing,
+        );
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].path, PathBuf::from("a.jpg"));
