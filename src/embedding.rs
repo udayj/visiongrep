@@ -1,9 +1,10 @@
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use image::{DynamicImage, ImageDecoder, ImageReader, RgbImage, imageops::FilterType};
 use ndarray::Array4;
 
-use crate::error::{EmbeddingError, VisionGrepError};
+use crate::error::{EmbeddingError, ImagePreparationError, VisionGrepError};
 use crate::model::{TextSession, VisionSession};
 use crate::timing::{Phase, TimingRecorder};
 
@@ -24,6 +25,12 @@ const CLIP_STD: [f32; 3] = [0.26862954, 0.261_302_6, 0.275_777_1];
 pub(crate) struct EmbeddingContract {
     pub(crate) image: &'static str,
     pub(crate) query: &'static str,
+}
+
+pub(crate) struct PreparedImage {
+    pub(crate) values: Vec<f32>,
+    decoding_elapsed: Option<Duration>,
+    preprocessing_elapsed: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,22 +100,55 @@ impl NormalizedEmbedding {
     }
 }
 
-/// Converts one image into the normalized embedding representation used by storage and search.
-pub(crate) fn embed_image(
+pub(crate) fn prepare_image(
     path: &Path,
+    measure_timing: bool,
+) -> Result<PreparedImage, ImagePreparationError> {
+    let decoding_started = measure_timing.then(Instant::now);
+    let image = load_image(path)?;
+    let decoding_elapsed = decoding_started.map(|started| started.elapsed());
+    let preprocessing_started = measure_timing.then(Instant::now);
+    let values = preprocess_pixels(image);
+    let preprocessing_elapsed = preprocessing_started.map(|started| started.elapsed());
+    Ok(PreparedImage {
+        values,
+        decoding_elapsed,
+        preprocessing_elapsed,
+    })
+}
+
+pub(crate) fn embed_prepared_images(
+    prepared: Vec<PreparedImage>,
     session: &mut VisionSession,
     timing: &mut TimingRecorder,
-) -> Result<NormalizedEmbedding, VisionGrepError> {
-    let input = preprocess_image(path, timing)?;
+) -> Result<Vec<NormalizedEmbedding>, VisionGrepError> {
+    if prepared.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let batch_size = prepared.len();
+    let mut values = Vec::with_capacity(batch_size * 3 * IMAGE_SIZE_USIZE * IMAGE_SIZE_USIZE);
+    for image in prepared {
+        timing.record_duration(Phase::ImageDecoding, image.decoding_elapsed);
+        timing.record_duration(Phase::ImagePreprocessing, image.preprocessing_elapsed);
+        values.extend(image.values);
+    }
+    let input = Array4::from_shape_vec((batch_size, 3, IMAGE_SIZE_USIZE, IMAGE_SIZE_USIZE), values)
+        .map_err(|source| VisionGrepError::ImageBatchShape { source })?;
     let inference_started = timing.start();
-    let embedding = session.run(&input)?;
+    let embeddings = session.run_batch(&input)?;
     timing.record(Phase::VisionInference, inference_started);
-    NormalizedEmbedding::from_model_output(embedding).map_err(|source| {
-        VisionGrepError::InvalidModelEmbedding {
-            kind: "image",
-            source,
-        }
-    })
+    embeddings
+        .into_iter()
+        .map(|embedding| {
+            NormalizedEmbedding::from_model_output(embedding).map_err(|source| {
+                VisionGrepError::InvalidModelEmbedding {
+                    kind: "image",
+                    source,
+                }
+            })
+        })
+        .collect()
 }
 
 /// Converts a natural-language query into a normalized embedding in the same CLIP vector space.
@@ -154,44 +194,31 @@ fn l2_norm(values: &[f32]) -> f32 {
     values.iter().map(|value| value * value).sum::<f32>().sqrt()
 }
 
-fn preprocess_image(
-    path: &Path,
-    timing: &mut TimingRecorder,
-) -> Result<Array4<f32>, VisionGrepError> {
-    let decoding_started = timing.start();
-    let image = load_image(path)?;
-    timing.record(Phase::ImageDecoding, decoding_started);
-    let preprocessing_started = timing.start();
-    let input = preprocess_pixels(image);
-    timing.record(Phase::ImagePreprocessing, preprocessing_started);
-    Ok(input)
-}
-
 /// Decodes an image only after checking its declared resource requirements and applies orientation.
 ///
 /// Dimensions and decoded byte count are inspected before pixel allocation to limit unconstrained
 /// decompression and pathological inputs. EXIF orientation is applied before cropping so the crop follows
 /// the image's intended visual orientation.
-fn load_image(path: &Path) -> Result<DynamicImage, VisionGrepError> {
+fn load_image(path: &Path) -> Result<DynamicImage, ImagePreparationError> {
     let reader = ImageReader::open(path)
-        .map_err(|source| VisionGrepError::ImageDecode {
+        .map_err(|source| ImagePreparationError::Decode {
             path: path.to_owned(),
             source: source.into(),
         })?
         .with_guessed_format()
-        .map_err(|source| VisionGrepError::ImageDecode {
+        .map_err(|source| ImagePreparationError::Decode {
             path: path.to_owned(),
             source: source.into(),
         })?;
     let mut decoder = reader
         .into_decoder()
-        .map_err(|source| VisionGrepError::ImageDecode {
+        .map_err(|source| ImagePreparationError::Decode {
             path: path.to_owned(),
             source,
         })?;
     let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 {
-        return Err(VisionGrepError::InvalidImageDimensions {
+        return Err(ImagePreparationError::InvalidDimensions {
             path: path.to_owned(),
             width,
             height,
@@ -201,7 +228,7 @@ fn load_image(path: &Path) -> Result<DynamicImage, VisionGrepError> {
     let decoded_bytes = decoder.total_bytes();
     let estimated_working_bytes = estimate_working_bytes(pixel_count, decoded_bytes);
     if pixel_count > MAX_IMAGE_PIXELS || estimated_working_bytes > MAX_IMAGE_WORKING_BYTES {
-        return Err(VisionGrepError::ImageTooLarge {
+        return Err(ImagePreparationError::TooLarge {
             path: path.to_owned(),
             width,
             height,
@@ -212,12 +239,12 @@ fn load_image(path: &Path) -> Result<DynamicImage, VisionGrepError> {
 
     let orientation = decoder
         .orientation()
-        .map_err(|source| VisionGrepError::ImageDecode {
+        .map_err(|source| ImagePreparationError::Decode {
             path: path.to_owned(),
             source,
         })?;
     let mut image =
-        DynamicImage::from_decoder(decoder).map_err(|source| VisionGrepError::ImageDecode {
+        DynamicImage::from_decoder(decoder).map_err(|source| ImagePreparationError::Decode {
             path: path.to_owned(),
             source,
         })?;
@@ -226,16 +253,15 @@ fn load_image(path: &Path) -> Result<DynamicImage, VisionGrepError> {
 }
 
 /// Produces the channel-first, normalized `[1, 3, 224, 224]` tensor expected by the vision model.
-fn preprocess_pixels(image: DynamicImage) -> Array4<f32> {
+fn preprocess_pixels(image: DynamicImage) -> Vec<f32> {
     let resized = resize_and_center_crop(image);
-    let mut input = Array4::<f32>::zeros((1, 3, IMAGE_SIZE_USIZE, IMAGE_SIZE_USIZE));
+    let mut input = vec![0.0; 3 * IMAGE_SIZE_USIZE * IMAGE_SIZE_USIZE];
 
     for (pixel_index, pixel) in resized.pixels().enumerate() {
-        let x = pixel_index % IMAGE_SIZE_USIZE;
-        let y = pixel_index / IMAGE_SIZE_USIZE;
         for channel in 0..3 {
             let value = f32::from(pixel[channel]) / 255.0;
-            input[[0, channel, y, x]] = (value - CLIP_MEAN[channel]) / CLIP_STD[channel];
+            let channel_offset = channel * IMAGE_SIZE_USIZE * IMAGE_SIZE_USIZE;
+            input[channel_offset + pixel_index] = (value - CLIP_MEAN[channel]) / CLIP_STD[channel];
         }
     }
 
@@ -267,6 +293,8 @@ fn estimate_working_bytes(pixel_count: u64, decoded_bytes: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use image::{ImageFormat, Rgb};
+
     use super::*;
 
     #[test]
@@ -349,5 +377,53 @@ mod tests {
         let decoded_bytes = pixel_count * RGB_CHANNELS;
 
         assert!(estimate_working_bytes(pixel_count, decoded_bytes) > MAX_IMAGE_WORKING_BYTES);
+    }
+
+    #[test]
+    #[ignore = "requires the pinned CLIP vision model in the visiongrep cache"]
+    fn batched_and_single_image_inference_match() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = [
+            directory.path().join("first.png"),
+            directory.path().join("second.png"),
+        ];
+        for (seed, path) in [17_u8, 113].into_iter().zip(&paths) {
+            let image = RgbImage::from_fn(320, 240, |x, y| {
+                Rgb([
+                    seed.wrapping_add(x as u8),
+                    seed.wrapping_add(y as u8),
+                    seed.wrapping_add((x + y) as u8),
+                ])
+            });
+            image.save_with_format(path, ImageFormat::Png).unwrap();
+        }
+
+        let model_paths = crate::model::model_paths().unwrap();
+        let mut session = VisionSession::load(&model_paths).unwrap();
+        let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
+        let mut singles = Vec::new();
+        for path in &paths {
+            let prepared = prepare_image(path, false).unwrap();
+            singles.push(
+                embed_prepared_images(vec![prepared], &mut session, &mut timing)
+                    .unwrap()
+                    .remove(0),
+            );
+        }
+        let prepared = paths
+            .iter()
+            .map(|path| prepare_image(path, false).unwrap())
+            .collect();
+        let batched = embed_prepared_images(prepared, &mut session, &mut timing).unwrap();
+
+        for (single, batched) in singles.iter().zip(&batched) {
+            let max_absolute_error = single
+                .as_slice()
+                .iter()
+                .zip(batched.as_slice())
+                .map(|(left, right)| (left - right).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(max_absolute_error <= 1e-6, "{max_absolute_error}");
+        }
     }
 }

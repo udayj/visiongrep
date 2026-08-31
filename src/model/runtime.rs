@@ -30,10 +30,26 @@ impl VisionSession {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn run(&mut self, input: &Array4<f32>) -> Result<Vec<f32>, VisionGrepError> {
+        let mut embeddings = self.run_batch(input)?;
+        if embeddings.len() != 1 {
+            return Err(VisionGrepError::UnexpectedModelOutputShape {
+                expected: vec![1, EMBEDDING_DIM],
+                actual: vec![embeddings.len(), EMBEDDING_DIM],
+            });
+        }
+        Ok(embeddings.remove(0))
+    }
+
+    pub(crate) fn run_batch(
+        &mut self,
+        input: &Array4<f32>,
+    ) -> Result<Vec<Vec<f32>>, VisionGrepError> {
+        let batch_size = input.shape()[0];
         let input = TensorRef::from_array_view(input)?;
         let outputs = self.session.run(ort::inputs![input])?;
-        extract_embedding(&outputs)
+        extract_embeddings(&outputs, batch_size)
     }
 }
 
@@ -66,7 +82,8 @@ impl TextSession {
         let attention_mask = TensorRef::from_array_view(&attention_mask)?;
         let inference_started = timing.start();
         let outputs = self.session.run(ort::inputs![input_ids, attention_mask])?;
-        let embedding = extract_embedding(&outputs)?;
+        let mut embeddings = extract_embeddings(&outputs, 1)?;
+        let embedding = embeddings.remove(0);
         timing.record(Phase::TextInference, inference_started);
         Ok(embedding)
     }
@@ -125,21 +142,26 @@ fn configure_tokenizer(tokenizer: &mut tokenizers::Tokenizer) -> Result<(), toke
         .map(|_| ())
 }
 
-fn extract_embedding(
+fn extract_embeddings(
     outputs: &ort::session::SessionOutputs<'_>,
-) -> Result<Vec<f32>, VisionGrepError> {
+    batch_size: usize,
+) -> Result<Vec<Vec<f32>>, VisionGrepError> {
     let output_value = outputs
         .values()
         .next()
         .ok_or(VisionGrepError::MissingModelOutput)?;
     let output = output_value.try_extract_array::<f32>()?;
-    if output.shape() != [1, EMBEDDING_DIM] {
+    if output.shape() != [batch_size, EMBEDDING_DIM] {
         return Err(VisionGrepError::UnexpectedModelOutputShape {
-            expected: EMBEDDING_DIM,
+            expected: vec![batch_size, EMBEDDING_DIM],
             actual: output.shape().to_vec(),
         });
     }
-    Ok(output.iter().copied().collect())
+    let values = output.iter().copied().collect::<Vec<_>>();
+    Ok(values
+        .chunks_exact(EMBEDDING_DIM)
+        .map(<[f32]>::to_vec)
+        .collect())
 }
 
 /// Creates an optimized ONNX Runtime session for one model artifact.
@@ -169,6 +191,9 @@ fn require_file(path: &Path) -> Result<(), VisionGrepError> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use ort::value::ValueType;
     use serde::Deserialize;
     use tokenizers::{Tokenizer, models::bpe::BPE};
 
@@ -217,6 +242,76 @@ mod tests {
         assert_eq!(padding.pad_id, PAD_TOKEN_ID);
         assert_eq!(padding.pad_token, PAD_TOKEN);
         assert_eq!(tokenizer.get_truncation().unwrap().max_length, TEXT_TOKENS);
+    }
+
+    /// The current encoder declares a dynamic batch dimension, which is required before the
+    /// indexing pipeline may concatenate preprocessed image tensors.
+    #[test]
+    #[ignore = "requires the pinned CLIP vision model in the visiongrep cache"]
+    fn vision_model_contract_supports_dynamic_batches() {
+        let paths = crate::model::model_paths().unwrap();
+        let mut session = VisionSession::load(&paths).unwrap();
+        let input = session.session.inputs().first().unwrap();
+
+        let ValueType::Tensor { shape, .. } = input.dtype() else {
+            panic!("vision model input is not a tensor: {:?}", input.dtype());
+        };
+        assert_eq!(&shape[..], &[-1, -1, -1, -1]);
+
+        let single = Array4::<f32>::zeros((1, 3, 224, 224));
+        let batched = Array4::<f32>::zeros((2, 3, 224, 224));
+
+        let expected = session.run(&single).unwrap();
+        let actual = session.run_batch(&batched).unwrap();
+        assert_eq!(actual.len(), 2);
+        for embedding in actual {
+            assert_eq!(embedding, expected);
+        }
+    }
+
+    /// Measures the pinned encoder directly; run in release mode with immutable artifacts.
+    #[test]
+    #[ignore = "release benchmark requiring the pinned CLIP vision model"]
+    fn vision_batch_size_matrix() {
+        let paths = crate::model::model_paths().unwrap();
+        let mut session = VisionSession::load(&paths).unwrap();
+        let samples = std::env::var("VISIONGREP_BATCH_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(5);
+        assert!(samples > 0);
+
+        let mut reports = Vec::new();
+        for batch_size in [1, 2, 4, 8, 16] {
+            let input = Array4::from_shape_fn((batch_size, 3, 224, 224), |(_, c, y, x)| {
+                ((c * 224 * 224 + y * 224 + x) % 257) as f32 / 128.0 - 1.0
+            });
+            let expected = session.run_batch(&input).unwrap();
+            assert_eq!(expected.len(), batch_size);
+            assert!(expected.windows(2).all(|pair| pair[0] == pair[1]));
+
+            let mut elapsed_ms = Vec::with_capacity(samples);
+            for _ in 0..samples {
+                let started = Instant::now();
+                let actual = session.run_batch(&input).unwrap();
+                elapsed_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+                assert_eq!(actual, expected);
+            }
+            elapsed_ms.sort_by(f64::total_cmp);
+            let p95_index = ((samples as f64 * 0.95).ceil() as usize)
+                .saturating_sub(1)
+                .min(samples - 1);
+            let median_ms = elapsed_ms[samples / 2];
+            reports.push(serde_json::json!({
+                "batch_size": batch_size,
+                "samples": samples,
+                "median_ms": median_ms,
+                "p95_ms": elapsed_ms[p95_index],
+                "median_images_per_second": batch_size as f64 * 1_000.0 / median_ms,
+            }));
+        }
+
+        println!("{}", serde_json::to_string(&reports).unwrap());
     }
 
     /// Run explicitly after installing the pinned model artifacts; ordinary unit tests stay fast

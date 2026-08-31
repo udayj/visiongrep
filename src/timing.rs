@@ -161,6 +161,20 @@ impl TimingRecorder {
         measurement.invocations += 1;
     }
 
+    pub(crate) fn record_duration(&mut self, phase: Phase, elapsed: Option<Duration>) {
+        let Some(elapsed) = elapsed else {
+            return;
+        };
+
+        let measurement = self.phases.entry(phase).or_default();
+        measurement.elapsed += elapsed;
+        measurement.invocations += 1;
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub(crate) fn set_corpus_size(&mut self, corpus_size: usize) {
         self.environment.corpus_size = corpus_size;
     }
