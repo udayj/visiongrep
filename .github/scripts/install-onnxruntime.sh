@@ -39,7 +39,7 @@ else
 fi
 
 if [[ ! -d "${extracted}" ]]; then
-  tar --no-same-owner -xzf "${archive}" -C "${destination}"
+  tar -xzf "${archive}" -C "${destination}"
 fi
 
 readonly library_directory="${extracted}/lib"
