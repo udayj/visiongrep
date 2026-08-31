@@ -22,6 +22,8 @@ jobs:
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - name: Install pinned ONNX Runtime
+        run: .github/scripts/install-onnxruntime.sh "$RUNNER_TEMP/onnxruntime"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
