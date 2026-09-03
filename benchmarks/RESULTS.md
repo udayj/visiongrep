@@ -146,6 +146,10 @@ after the scenario run; scenario total-wall measurements are unaffected.
 
 ## Apple Silicon Core ML decision
 
+This section records a completed historical experiment. The dedicated GitHub Actions workflow was
+removed after the decision was made; the supporting scripts under `benchmarks/coreml/` remain for
+manual reproduction on real Apple Silicon.
+
 Run `33380886290` used a real `macos-15` arm64 GitHub-hosted runner and 502 images over five repeated
 end-to-end samples. Core ML passed the correctness gate: maximum normalized-embedding error
 7.38e-7, minimum cosine 0.99999994, exact top-K paths/order, identical threshold/no-match decisions,
@@ -179,8 +183,9 @@ code or dependency is retained; CPU ONNX remains the reference.
 ## Reproduction and quality gates
 
 Use the commands in `benchmarks/README.md` for the pinned corpus and system adapters. The canonical
-isolated entry points are the `Model contract smoke test`, `Heavy retrieval and performance
-benchmark`, and `Apple Silicon Core ML experiment` manual workflows.
+isolated workflow entry points are the `Model contract smoke test` and `Heavy retrieval and
+performance benchmark`. The Core ML workflow used for the historical experiment above is no longer
+present; its supporting scripts are retained for manual reproduction.
 
 The Rust 1.89 quality gate is:
 

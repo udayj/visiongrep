@@ -124,8 +124,9 @@ python benchmarks/performance/run_scenarios.py \
 ```
 
 Add `--include-network` only when the separately reported, variable model-download scenario is
-wanted. Use the manually triggered Apple Silicon workflow for Core ML; compilation or conversion on
-a non-Apple host is not accepted as runtime evidence.
+wanted. The recorded Core ML experiment is historical and its GitHub Actions workflow has been
+removed. The scripts under `coreml/` remain available for manual reproduction on real Apple Silicon;
+compilation or conversion on a non-Apple host is not accepted as runtime evidence.
 
 Run the isolated Rust measurement matrices in release mode:
 
