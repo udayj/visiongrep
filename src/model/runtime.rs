@@ -149,9 +149,10 @@ fn extract_embeddings(
         });
     }
     let values = output.iter().copied().collect::<Vec<_>>();
-    Ok(values
-        .chunks_exact(EMBEDDING_DIM)
-        .map(<[f32]>::to_vec)
+    let (embeddings, _) = values.as_chunks::<EMBEDDING_DIM>();
+    Ok(embeddings
+        .iter()
+        .map(|embedding| embedding.to_vec())
         .collect())
 }
 
@@ -217,9 +218,9 @@ mod tests {
 
     fn decode_hex(value: &str) -> Vec<u8> {
         assert_eq!(value.len() % 2, 0);
-        value
-            .as_bytes()
-            .chunks_exact(2)
+        let (pairs, _) = value.as_bytes().as_chunks::<2>();
+        pairs
+            .iter()
             .map(|pair| {
                 let pair = std::str::from_utf8(pair).unwrap();
                 u8::from_str_radix(pair, 16).unwrap()

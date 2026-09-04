@@ -21,5 +21,14 @@ cargo test --release batched_and_single_image_inference_match -- --ignored
 cargo test --release vision_model_contract_supports_dynamic_batches -- --ignored
 ```
 
+The image-query CLI integration test needs only the pinned vision model under
+`$XDG_CACHE_HOME/visiongrep/models/datacomp_vision.onnx`. It creates an isolated cache with no text
+artifacts and checks external queries, indexed-query reuse, changed files, no-cache searches, and
+reindex atomicity:
+
+```text
+cargo test --release --test image_queries image_query_end_to_end -- --ignored
+```
+
 `clip_text_golden.json` is retained only as provenance for the pre-DataComp Qdrant baseline used by
 the comparative benchmark. It is not the current product contract.

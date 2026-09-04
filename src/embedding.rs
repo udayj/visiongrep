@@ -63,9 +63,11 @@ impl NormalizedEmbedding {
             });
         }
 
-        let values = bytes
-            .chunks_exact(std::mem::size_of::<f32>())
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        let (encoded_values, _) = bytes.as_chunks::<4>();
+        let values = encoded_values
+            .iter()
+            .copied()
+            .map(f32::from_le_bytes)
             .collect::<Vec<_>>();
         if values.iter().any(|value| !value.is_finite()) {
             return Err(EmbeddingError::NonFinite);
@@ -116,6 +118,22 @@ pub(crate) fn prepare_image(
         decoding_elapsed,
         preprocessing_elapsed,
     })
+}
+
+/// Uses the same inference and normalization boundary for a query image as for corpus batches.
+pub(crate) fn embed_prepared_image(
+    prepared: PreparedImage,
+    session: &mut VisionSession,
+    timing: &mut TimingRecorder,
+) -> Result<NormalizedEmbedding, VisionGrepError> {
+    let embeddings = embed_prepared_images(vec![prepared], session, timing)?;
+    let [embedding] = embeddings.try_into().map_err(|embeddings: Vec<_>| {
+        VisionGrepError::ImageBatchResultCount {
+            expected: 1,
+            actual: embeddings.len(),
+        }
+    })?;
+    Ok(embedding)
 }
 
 pub(crate) fn embed_prepared_images(
@@ -299,7 +317,7 @@ fn resized_dimensions(width: u32, height: u32) -> (u32, u32) {
 }
 
 fn round_half_to_even(floor: u32, numerator: u32) -> u32 {
-    if numerator % 2 == 0 || floor % 2 == 0 {
+    if numerator.is_multiple_of(2) || floor.is_multiple_of(2) {
         floor
     } else {
         floor + 1
@@ -360,9 +378,9 @@ mod tests {
 
     fn decode_hex(value: &str) -> Vec<u8> {
         assert_eq!(value.len() % 2, 0);
-        value
-            .as_bytes()
-            .chunks_exact(2)
+        let (pairs, _) = value.as_bytes().as_chunks::<2>();
+        pairs
+            .iter()
             .map(|pair| {
                 let pair = std::str::from_utf8(pair).unwrap();
                 u8::from_str_radix(pair, 16).unwrap()

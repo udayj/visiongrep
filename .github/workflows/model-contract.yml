@@ -21,8 +21,6 @@ jobs:
           ref: v3.3.0
           path: .benchmark-rclip
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: 1.89.0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -80,6 +78,7 @@ jobs:
           cargo test --release cosine_scores_rankings_and_thresholds_match_openclip -- --ignored --nocapture
           cargo test --release batched_and_single_image_inference_match -- --ignored --nocapture
           cargo test --release vision_model_contract_supports_dynamic_batches -- --ignored --nocapture
+          cargo test --release --test image_queries image_query_end_to_end -- --ignored --nocapture
       - uses: actions/upload-artifact@v4
         if: always()
         with:

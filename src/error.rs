@@ -123,12 +123,10 @@ pub(crate) enum VisionGrepError {
     #[error("an image preprocessing worker panicked")]
     ImagePreprocessingWorkerPanicked,
 
-    #[error(
-        "image preprocessing pipeline lost deterministic result {expected}; received {actual:?}"
-    )]
-    ImagePreprocessingResultOrder {
-        expected: usize,
-        actual: Option<usize>,
+    #[error("failed to create image preprocessing workers: {source}")]
+    ImagePreprocessingPool {
+        #[source]
+        source: rayon::ThreadPoolBuildError,
     },
 
     #[error("failed to assemble a vision inference batch: {source}")]
@@ -159,6 +157,16 @@ pub(crate) enum VisionGrepError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("failed to open query image {path}: {source}")]
+    QueryImageOpen {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("query image is not a regular file: {path}")]
+    QueryImageNotFile { path: PathBuf },
 
     #[error("discovered image {path} is outside search root {root}")]
     ImageOutsideSearchRoot { path: PathBuf, root: PathBuf },

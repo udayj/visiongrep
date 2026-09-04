@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::panic::catch_unwind;
+
+use rayon::ThreadPool;
+use rayon::prelude::*;
 
 use crate::embedding::{NormalizedEmbedding, PreparedImage, embed_prepared_images, prepare_image};
 use crate::error::{ImagePreparationError, VisionGrepError};
@@ -34,11 +37,16 @@ pub(crate) fn ingest_into_index(
 ) -> Result<(), VisionGrepError> {
     report_started(files.len(), on_event)?;
     let result = (|| {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let pool = preprocessing_pool(files.len())?;
         for files in files.chunks(INDEX_BATCH_SIZE) {
             let mut updates = Vec::with_capacity(files.len());
             for files in files.chunks(VISION_BATCH_SIZE) {
-                let embeddings =
-                    embed_image_batch_with_skip_policy(root, files, session, on_event, timing)?;
+                let embeddings = embed_image_batch_with_skip_policy(
+                    root, files, session, &pool, on_event, timing,
+                )?;
                 for (file, embedding) in files.iter().zip(embeddings) {
                     let update = match embedding {
                         Some(embedding) => ImageUpdate::Upsert {
@@ -73,10 +81,14 @@ pub(crate) fn embed_images(
 ) -> Result<Vec<ImageRecord>, VisionGrepError> {
     report_started(files.len(), on_event)?;
     let result = (|| {
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pool = preprocessing_pool(files.len())?;
         let mut records = Vec::with_capacity(files.len());
         for files in files.chunks(VISION_BATCH_SIZE) {
             let embeddings =
-                embed_image_batch_with_skip_policy(root, files, session, on_event, timing)?;
+                embed_image_batch_with_skip_policy(root, files, session, &pool, on_event, timing)?;
             for (file, embedding) in files.iter().zip(embeddings) {
                 if let Some(embedding) = embedding {
                     records.push(ImageRecord {
@@ -109,10 +121,11 @@ fn embed_image_batch_with_skip_policy(
     root: &SearchRoot,
     files: &[ImageFile],
     session: &mut VisionSession,
+    pool: &ThreadPool,
     on_event: &mut impl FnMut(IngestEvent),
     timing: &mut TimingRecorder,
 ) -> Result<Vec<Option<NormalizedEmbedding>>, VisionGrepError> {
-    let prepared = prepare_images_parallel(root, files, timing)?;
+    let prepared = prepare_images_parallel(root, files, timing.is_enabled(), pool)?;
     infer_prepared_batch(files.len(), prepared, on_event, |valid_images| {
         embed_prepared_images(valid_images, session, timing)
     })
@@ -151,77 +164,38 @@ fn infer_prepared_batch(
     Ok(ordered)
 }
 
-fn prepare_images_parallel(
-    root: &SearchRoot,
-    files: &[ImageFile],
-    timing: &TimingRecorder,
-) -> Result<Vec<Result<PreparedImage, ImagePreparationError>>, VisionGrepError> {
+// One operation owns the pool, so every batch reuses its workers without global configuration.
+fn preprocessing_pool(file_count: usize) -> Result<ThreadPool, VisionGrepError> {
     let available = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1);
-    let worker_count = available.min(MAX_PREPROCESSING_WORKERS).min(files.len());
-    prepare_images_with_workers(root, files, timing.is_enabled(), worker_count)
+    let worker_count = available
+        .min(MAX_PREPROCESSING_WORKERS)
+        .min(file_count)
+        .max(1);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .build()
+        .map_err(|source| VisionGrepError::ImagePreprocessingPool { source })
 }
 
-fn prepare_images_with_workers(
+fn prepare_images_parallel(
     root: &SearchRoot,
     files: &[ImageFile],
     measure_timing: bool,
-    worker_count: usize,
+    pool: &ThreadPool,
 ) -> Result<Vec<Result<PreparedImage, ImagePreparationError>>, VisionGrepError> {
-    if files.is_empty() {
-        return Ok(Vec::new());
-    }
-    let worker_count = worker_count.max(1).min(files.len());
-    let next_index = AtomicUsize::new(0);
-    let mut indexed_results = std::thread::scope(|scope| {
-        let mut workers = Vec::with_capacity(worker_count);
-        for _ in 0..worker_count {
-            workers.push(scope.spawn(|| {
-                let mut results = Vec::new();
-                loop {
-                    let index = next_index.fetch_add(1, Ordering::Relaxed);
-                    let Some(file) = files.get(index) else {
-                        break;
-                    };
-                    results.push((
-                        index,
-                        prepare_image(&root.image_path(&file.relative_path), measure_timing),
-                    ));
-                }
-                results
-            }));
-        }
-
-        let mut results = Vec::with_capacity(files.len());
-        for worker in workers {
-            let mut worker_results = worker
-                .join()
-                .map_err(|_| VisionGrepError::ImagePreprocessingWorkerPanicked)?;
-            results.append(&mut worker_results);
-        }
-        Ok::<_, VisionGrepError>(results)
-    })?;
-
-    indexed_results.sort_by_key(|(index, _)| *index);
-    let mut ordered = Vec::with_capacity(files.len());
-    let mut indexed_results = indexed_results.into_iter();
-    for expected in 0..files.len() {
-        let Some((actual, result)) = indexed_results.next() else {
-            return Err(VisionGrepError::ImagePreprocessingResultOrder {
-                expected,
-                actual: None,
-            });
-        };
-        if actual != expected {
-            return Err(VisionGrepError::ImagePreprocessingResultOrder {
-                expected,
-                actual: Some(actual),
-            });
-        }
-        ordered.push(result);
-    }
-    Ok(ordered)
+    pool.install(|| {
+        // Rayon forwards worker panics here. Preserve the CLI's typed operational error boundary.
+        catch_unwind(|| {
+            // Slice iteration and Vec collection preserve input order, including failed images.
+            files
+                .par_iter()
+                .map(|file| prepare_image(&root.image_path(&file.relative_path), measure_timing))
+                .collect()
+        })
+    })
+    .map_err(|_| VisionGrepError::ImagePreprocessingWorkerPanicked)
 }
 
 #[cfg(test)]
@@ -233,6 +207,19 @@ mod tests {
 
     use super::*;
     use crate::index::discover_images;
+
+    fn prepare_images_with_workers(
+        root: &SearchRoot,
+        files: &[ImageFile],
+        measure_timing: bool,
+        worker_count: usize,
+    ) -> Result<Vec<Result<PreparedImage, ImagePreparationError>>, VisionGrepError> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count.max(1))
+            .build()
+            .map_err(|source| VisionGrepError::ImagePreprocessingPool { source })?;
+        prepare_images_parallel(root, files, measure_timing, &pool)
+    }
 
     fn write_test_image(path: &std::path::Path, seed: u8) {
         let image = RgbImage::from_fn(96, 64, |x, y| {

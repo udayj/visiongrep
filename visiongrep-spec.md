@@ -2,7 +2,7 @@
 
 ## What it is
 
-A CLI tool that searches a folder of images using natural language. You describe what you're looking for; it returns ranked matches. CLIP zero-shot similarity via ONNX Runtime. Single Rust binary, no Python, no GPU required.
+A CLI tool that searches a folder of images using natural language or a reference image. It returns ranked matches using CLIP similarity via ONNX Runtime. Single Rust binary, no Python, no GPU required.
 
 visiongrep is a Rust-native visual grep for local folders, scripts, and AI agents.
 It is designed for repeated non-interactive use: fast startup, warm-cache search,
@@ -11,6 +11,7 @@ runtime.
 
 ```
 visiongrep "red car parked near a building" ./photos/
+visiongrep --image ./reference.jpg ./photos/
 ```
 
 ---
@@ -20,7 +21,6 @@ visiongrep "red car parked near a building" ./photos/
 - No video support
 - No GUI
 - No server/daemon mode
-- No image-to-image search
 - No re-ranking or multi-modal fusion
 - No Windows support (Linux + macOS only for now)
 
@@ -31,6 +31,7 @@ visiongrep "red car parked near a building" ./photos/
 ```
 visiongrep/
 ├── Cargo.toml
+├── rust-toolchain.toml  # Rust 1.98.1, default profile (includes rustfmt and Clippy)
 ├── AGENTS.md
 ├── src/
 │   ├── main.rs          # lightweight process boundary and exit codes
@@ -64,6 +65,7 @@ visiongrep/
 ```toml
 [dependencies]
 ort = "=2.0.0-rc.12"             # ONNX Runtime 1.24 bindings
+rayon = "1.12"                   # bounded parallel image preprocessing
 image = "0.25"                   # image decoding (JPEG, PNG, WEBP, BMP)
 tokenizers = "0.22"              # OpenCLIP text tokenizer (HuggingFace)
 ndarray = "0.17"                 # tensor assembly
@@ -115,12 +117,14 @@ The matching `tokenizer.json` is downloaded alongside the text model. Model arti
 
 ```
 visiongrep [OPTIONS] <QUERY> <PATH>
+visiongrep [OPTIONS] --image <FILE> <PATH>
 
 Arguments:
   <QUERY>   Natural language description of what to find
   <PATH>    Directory to search (searched recursively)
 
 Options:
+  --image <FILE>        Find similar images, excluding the query file itself
   -n, --top <N>          Number of results to return [default: 5]
   -t, --threshold <F>    Minimum raw CLIP cosine similarity -1.0–1.0 [default: 0.25]
   --json                 Output results as JSON
@@ -136,6 +140,13 @@ Options:
   -h, --help             Print help
   -V, --version          Print version
 ```
+
+Exactly one text query or `--image FILE` is required. Image query paths are resolved from the
+process working directory and may be outside the search directory. The query's canonical path is
+excluded before selecting the top N results; symlink aliases identify the same query file, while
+separate duplicate files remain eligible. An unreadable or invalid query image is an operational
+error, including when the search directory is empty. The existing threshold applies to both query
+types; its suitability for image queries has not been separately calibrated.
 
 ### Default output (human-readable)
 
@@ -211,10 +222,17 @@ preprocessing change that could alter vectors must increment this version. Older
 caches are cleared and rebuilt automatically; newer cache versions fail safely instead of being
 silently misread.
 
-Exact query embeddings are cached in the same database. On an unchanged folder, a repeated query
+Exact text query embeddings are cached in the same database. On an unchanged folder, a repeated query
 loads neither ONNX model: the command reads cached image/query vectors and performs dot products.
 Novel queries load only the text model. New or changed images load only the vision model unless the
 query is also novel.
+
+An image query reuses its corpus embedding after normal index reconciliation when that file is
+already indexed. Otherwise, the vision model encodes it for this invocation. External query images
+and their embeddings are never added to the index or copied into the search tree; repeated external
+queries are encoded again. Image queries do not load the text model or tokenizer. When indexing has
+already loaded a vision session, the query reuses that session. With `--no-cache`, embeddings exist
+only in memory, including any corpus embedding reused for the query.
 
 The schema also has a `metadata(key TEXT PRIMARY KEY, value BLOB NOT NULL)` table. Schema version 3
 stores the canonical native-byte search root plus separate image-embedding and query-embedding
@@ -274,8 +292,8 @@ score-descending/path-ascending order. If none meet
 the threshold, emit no result rows and exit 1.
 
 Text embedding runs once for a novel query and is reused for exact repeated queries. Indexing uses
-up to four scoped preprocessing workers, an atomic work index, ordered result restoration, batches
-of eight images, and one inference consumer. Memory is bounded by the 256-image persistence chunk,
+an operation-owned Rayon pool with up to four preprocessing workers, ordered result collection,
+batches of eight images, and one inference consumer. The pool is reused across batches. Memory is bounded by the 256-image persistence chunk,
 eight-image inference batches, and four preprocessing workers. Recoverable decode/resource failures
 produce explicit skip events; worker, inference, cardinality, runtime, and database failures abort.
 
@@ -411,6 +429,5 @@ boundary maps matches, no matches, and operational failures to exit codes. No `u
 - MCP server wrapper
 - Windows build
 - Video frame extraction
-- Image-to-image search (`--image` flag instead of query text)
 - Streaming/watch mode
 - Config file

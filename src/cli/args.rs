@@ -1,20 +1,28 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser, error::ErrorKind};
 
 use super::terminal::OutputFormat;
-use crate::application::{ArtifactVerification, CacheMode, SearchRequest};
+use crate::application::{ArtifactVerification, CacheMode, Query, SearchRequest};
 use crate::ranking::DEFAULT_SIMILARITY_THRESHOLD;
 use crate::timing::TimingDestination;
 
 #[derive(Debug, Parser)]
 #[command(
     version,
+    allow_missing_positional = true,
     about = "Rust-native visual grep for local folders, scripts, and AI agents"
 )]
 pub(crate) struct Cli {
-    #[arg(value_parser = parse_query, help = "Natural language description of what to find")]
-    query: String,
+    #[arg(value_parser = parse_query, required_unless_present = "image", conflicts_with = "image", help = "Natural language description of what to find")]
+    query: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Find images similar to FILE, excluding FILE itself"
+    )]
+    image: Option<PathBuf>,
 
     #[arg(help = "Directory to search recursively")]
     path: PathBuf,
@@ -93,7 +101,23 @@ pub(crate) struct Command {
 }
 
 impl Cli {
-    pub(crate) fn into_command(self) -> Command {
+    pub(crate) fn into_command(self) -> Result<Command, clap::Error> {
+        let query = match (self.query, self.image) {
+            (Some(text), None) => Query::Text(text),
+            (None, Some(path)) => Query::Image(path),
+            (None, None) => {
+                return Err(Self::command().error(
+                    ErrorKind::MissingRequiredArgument,
+                    "provide a text query or --image FILE",
+                ));
+            }
+            (Some(_), Some(_)) => {
+                return Err(Self::command().error(
+                    ErrorKind::ArgumentConflict,
+                    "a text query cannot be combined with --image",
+                ));
+            }
+        };
         let cache_mode = if self.no_cache {
             CacheMode::Disabled
         } else if self.reindex {
@@ -111,9 +135,9 @@ impl Cli {
             OutputFormat::Text
         };
 
-        Command {
+        Ok(Command {
             request: SearchRequest::new(
-                self.query,
+                query,
                 self.path,
                 self.top,
                 self.threshold,
@@ -130,7 +154,7 @@ impl Cli {
             timing_destination: self
                 .timing
                 .then(|| TimingDestination::new(self.timing_file)),
-        }
+        })
     }
 }
 
@@ -169,6 +193,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn image_query_accepts_options_before_or_after_the_search_path() {
+        for args in [
+            vec!["visiongrep", "--image", "reference.png", "photos"],
+            vec!["visiongrep", "photos", "--image", "reference.png"],
+            vec!["visiongrep", "--image", "reference.png", "--", "photos"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.path, PathBuf::from("photos"));
+            assert_eq!(cli.image, Some(PathBuf::from("reference.png")));
+            assert!(cli.query.is_none());
+            assert!(cli.into_command().is_ok());
+        }
+    }
+
+    #[test]
+    fn text_query_keeps_its_original_positional_arguments() {
+        let cli = Cli::try_parse_from(["visiongrep", "red bicycle", "photos"]).unwrap();
+        assert_eq!(cli.query.as_deref(), Some("red bicycle"));
+        assert_eq!(cli.path, PathBuf::from("photos"));
+        assert!(cli.image.is_none());
+    }
+
+    #[test]
+    fn exactly_one_query_and_a_search_path_are_required() {
+        for args in [
+            vec!["visiongrep"],
+            vec!["visiongrep", "photos"],
+            vec!["visiongrep", "--image", "reference.png"],
+            vec!["visiongrep", "robot", "photos", "--image", "reference.png"],
+            vec!["visiongrep", "--image", "reference.png", "robot", "photos"],
+            vec![
+                "visiongrep",
+                "--image",
+                "reference.png",
+                "photos",
+                "--image",
+                "other.png",
+            ],
+            vec!["visiongrep", "--image"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "accepted {args:?}");
+        }
+    }
+
+    #[test]
+    fn image_query_accepts_native_non_utf8_paths() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let image = OsString::from_vec(b"query-\xff.png".to_vec());
+        let cli = Cli::try_parse_from([
+            OsString::from("visiongrep"),
+            OsString::from("--image"),
+            image.clone(),
+            OsString::from("photos"),
+        ])
+        .unwrap();
+        assert_eq!(cli.image, Some(PathBuf::from(image)));
+    }
+
+    #[test]
     fn threshold_accepts_the_full_cosine_range() {
         assert_eq!(parse_threshold("-1").unwrap(), -1.0);
         assert_eq!(parse_threshold("1").unwrap(), 1.0);
@@ -203,7 +288,7 @@ mod tests {
             Cli::try_parse_from(["visiongrep", "robot", "photos", "--paths-only", "-0"]).unwrap();
 
         assert!(matches!(
-            cli.into_command().output_format,
+            cli.into_command().unwrap().output_format,
             OutputFormat::PathsNull
         ));
     }
