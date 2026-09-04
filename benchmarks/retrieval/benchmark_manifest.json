@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "visiongrep_baseline": {
+    "commit": "09564b0f03764f4d51852f9c698a78395b0d0bc8",
+    "vision_model_revision": "a636590e595dbbd798647c9dd4550d5652fba969",
+    "vision_sha256": "c68d3d9a200ddd2a8c8a5510b576d4c94d1ae383bf8b36dd8c084f94e1fb4d63",
+    "text_model_revision": "48ca1db27cb4063eb311ec2aa7f087a808112876",
+    "text_sha256": "4dbe762b11e36488304471e439cde89da053ad7acaddbf9e096745d142ec8d8b",
+    "tokenizer_sha256": "b68d571997a1f81bf521fb73806740ddb91e4ed6666cb6e996c066bb289cf55b"
+  },
+  "rclip": {
+    "version": "3.3.0",
+    "commit": "3dcec2de5e23311473f6fb6433e602aa4f4ca812",
+    "release_wheel_sha256": "1f02cf19413618a6aa76c14d841f32434d74f40639b5ac6d2cca2e1d15a8de2b",
+    "model_repository_revision": "17b9d07433aad73f70d338d8a1c7a4cef83887e0"
+  },
+  "datacomp": {
+    "source_model_revision": "4afec35ffe57a943d569ff7ee888061830164da8",
+    "source_weights_sha256": "92c26d60d3200ed5ed040dff31a8d19f8140648da8007216c25744c478deef27",
+    "vision_onnx_sha256": "3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c",
+    "text_onnx_sha256": "ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc",
+    "rclip_bpe_sha256": "924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a",
+    "visiongrep_tokenizer_sha256": "72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85"
+  },
+  "corpus": {
+    "dataset": "lmms-lab-encoder/COCO-Caption2017",
+    "dataset_revision": "3bdd5827e243cc3084ac69a1111e69c3ab9193ff",
+    "split": "val",
+    "rows": "0..500",
+    "redistributed": false
+  }
+}

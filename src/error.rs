@@ -3,6 +3,34 @@ use std::path::PathBuf;
 use ort::session::builder::SessionBuilder;
 
 #[derive(Debug, thiserror::Error)]
+pub(crate) enum ImagePreparationError {
+    #[error("failed to decode image {path}: {source}")]
+    Decode {
+        path: PathBuf,
+        #[source]
+        source: image::ImageError,
+    },
+
+    #[error(
+        "image {path} is too large to process safely ({width}x{height}, {decoded_bytes} decoded bytes, approximately {estimated_working_bytes} working bytes)"
+    )]
+    TooLarge {
+        path: PathBuf,
+        width: u32,
+        height: u32,
+        decoded_bytes: u64,
+        estimated_working_bytes: u64,
+    },
+
+    #[error("image {path} has invalid dimensions {width}x{height}")]
+    InvalidDimensions {
+        path: PathBuf,
+        width: u32,
+        height: u32,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum EmbeddingError {
     #[error("expected {expected} values, got {actual}")]
     Dimension { expected: usize, actual: usize },
@@ -42,6 +70,20 @@ pub(crate) enum VisionGrepError {
         actual: String,
     },
 
+    #[error("artifact size mismatch for {file}: expected {expected} bytes, got {actual}")]
+    ArtifactSize {
+        file: PathBuf,
+        expected: u64,
+        actual: u64,
+    },
+
+    #[error("failed to serialize verified artifact manifest at {path}: {source}")]
+    ArtifactManifestSerialize {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
     #[error("artifact destination has no parent directory: {path}")]
     ArtifactDestinationWithoutParent { path: PathBuf },
 
@@ -77,6 +119,26 @@ pub(crate) enum VisionGrepError {
         width: u32,
         height: u32,
     },
+
+    #[error("an image preprocessing worker panicked")]
+    ImagePreprocessingWorkerPanicked,
+
+    #[error(
+        "image preprocessing pipeline lost deterministic result {expected}; received {actual:?}"
+    )]
+    ImagePreprocessingResultOrder {
+        expected: usize,
+        actual: Option<usize>,
+    },
+
+    #[error("failed to assemble a vision inference batch: {source}")]
+    ImageBatchShape {
+        #[source]
+        source: ndarray::ShapeError,
+    },
+
+    #[error("vision inference returned {actual} embeddings for {expected} prepared images")]
+    ImageBatchResultCount { expected: usize, actual: usize },
 
     #[error("failed to read image metadata for {path}: {source}")]
     ImageMetadata {
@@ -116,8 +178,11 @@ pub(crate) enum VisionGrepError {
     #[error("model did not return an output tensor")]
     MissingModelOutput,
 
-    #[error("model returned output shape {actual:?}; expected [1, {expected}]")]
-    UnexpectedModelOutputShape { expected: usize, actual: Vec<usize> },
+    #[error("model returned output shape {actual:?}; expected {expected:?}")]
+    UnexpectedModelOutputShape {
+        expected: Vec<usize>,
+        actual: Vec<usize>,
+    },
 
     #[error("index error: {0}")]
     Index(#[from] rusqlite::Error),
@@ -136,6 +201,22 @@ pub(crate) enum VisionGrepError {
     #[error("image index version {found} is newer than the supported version {supported}")]
     IndexVersionTooNew { found: i64, supported: i64 },
 
+    #[error("index path must name a database file: {path}")]
+    IndexPathWithoutFileName { path: PathBuf },
+
+    #[error("index path is a directory: {path}")]
+    IndexPathIsDirectory { path: PathBuf },
+
+    #[error("image index at {index} belongs to search root {found}, not requested root {expected}")]
+    IndexRootMismatch {
+        index: PathBuf,
+        expected: PathBuf,
+        found: PathBuf,
+    },
+
+    #[error("image index at {path} is missing required metadata key {key}")]
+    IndexMetadataMissing { path: PathBuf, key: &'static str },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -143,6 +224,20 @@ pub(crate) enum VisionGrepError {
     JsonOutput {
         #[source]
         source: serde_json::Error,
+    },
+
+    #[error("failed to serialize timing JSON: {source}")]
+    TimingSerialize {
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error("failed while {operation} timing output at {path}: {source}")]
+    TimingFile {
+        operation: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
 
     #[error("cannot represent non-UTF-8 path in JSON: {path}")]
@@ -207,6 +302,36 @@ impl VisionGrepError {
                 source.io_error_kind() == Some(std::io::ErrorKind::BrokenPipe)
             }
             _ => false,
+        }
+    }
+}
+
+impl From<ImagePreparationError> for VisionGrepError {
+    fn from(error: ImagePreparationError) -> Self {
+        match error {
+            ImagePreparationError::Decode { path, source } => Self::ImageDecode { path, source },
+            ImagePreparationError::TooLarge {
+                path,
+                width,
+                height,
+                decoded_bytes,
+                estimated_working_bytes,
+            } => Self::ImageTooLarge {
+                path,
+                width,
+                height,
+                decoded_bytes,
+                estimated_working_bytes,
+            },
+            ImagePreparationError::InvalidDimensions {
+                path,
+                width,
+                height,
+            } => Self::InvalidImageDimensions {
+                path,
+                width,
+                height,
+            },
         }
     }
 }

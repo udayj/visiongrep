@@ -6,13 +6,16 @@ mod embedding;
 mod error;
 mod index;
 mod model;
+mod pillow_resize;
 mod ranking;
+mod timing;
 
 use clap::Parser;
 
 use crate::application::search;
 use crate::cli::{Cli, Terminal};
 use crate::error::VisionGrepError;
+use crate::timing::{Phase, TimingRecorder};
 
 fn main() {
     let exit_status = match run() {
@@ -28,11 +31,27 @@ fn main() {
 
 fn run() -> Result<ExitStatus, VisionGrepError> {
     let command = Cli::parse().into_command();
+    let mut timing = TimingRecorder::new(
+        command.timing_destination.is_some(),
+        crate::model::timing_metadata(),
+    );
     let mut terminal = Terminal::new(command.output_format, command.quiet);
-    let results = search(&command.request, &mut |event| terminal.handle_event(event))?;
+    let results = search(
+        &command.request,
+        &mut |event| terminal.handle_event(event),
+        &mut timing,
+    )?;
     let status = ExitStatus::from_has_matches(!results.is_empty());
 
-    preserve_status_on_broken_pipe(status, terminal.write_results(&results))
+    let output_started = timing.start();
+    let output = terminal.write_results(&results);
+    timing.record(Phase::OutputSerialization, output_started);
+    timing.finish();
+    if let Some(destination) = &command.timing_destination {
+        timing.write(destination)?;
+    }
+
+    preserve_status_on_broken_pipe(status, output)
 }
 
 /// A downstream reader closing early is successful pipeline behavior, but it must not change

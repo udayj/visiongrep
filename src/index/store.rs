@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -7,15 +6,84 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension, params};
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
-use crate::embedding::NormalizedEmbedding;
+use crate::embedding::{EmbeddingContract, NormalizedEmbedding};
 use crate::error::VisionGrepError;
 
 use super::scan::ImageFile;
 
-const EMBEDDING_CACHE_VERSION: i64 = 2;
+const EMBEDDING_CACHE_VERSION: i64 = 3;
 const INDEX_FILE_NAME: &str = ".visiongrep.db";
 const REINDEX_FILE_PREFIX: &str = ".visiongrep.db.reindex-";
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const ROOT_METADATA_KEY: &str = "search_root";
+const IMAGE_CONTRACT_METADATA_KEY: &str = "image_embedding_contract";
+const QUERY_CONTRACT_METADATA_KEY: &str = "query_embedding_contract";
+
+#[cfg(test)]
+fn test_contract() -> EmbeddingContract {
+    EmbeddingContract {
+        image: "test-image-contract",
+        query: "test-query-contract",
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IndexLocation {
+    path: PathBuf,
+}
+
+impl IndexLocation {
+    /// Resolves custom relative paths against the process working directory.
+    ///
+    /// The parent is canonicalized while the database filename is preserved because the database
+    /// need not exist yet. The default remains search-root-local for compatibility.
+    pub(crate) fn resolve(
+        search_root: &Path,
+        requested: Option<&Path>,
+    ) -> Result<Self, VisionGrepError> {
+        let Some(requested) = requested else {
+            return Ok(Self {
+                path: search_root.join(INDEX_FILE_NAME),
+            });
+        };
+        if requested.file_name().is_none() {
+            return Err(VisionGrepError::IndexPathWithoutFileName {
+                path: requested.to_owned(),
+            });
+        }
+        let path = if requested.is_absolute() {
+            requested.to_owned()
+        } else {
+            std::env::current_dir()
+                .map_err(VisionGrepError::Io)?
+                .join(requested)
+        };
+        if path.is_dir() {
+            return Err(VisionGrepError::IndexPathIsDirectory { path });
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName { path: path.clone() })?;
+        let canonical_parent =
+            parent
+                .canonicalize()
+                .map_err(|source| VisionGrepError::IndexFile {
+                    operation: "resolving index parent directory",
+                    path: parent.to_owned(),
+                    source,
+                })?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName { path: path.clone() })?;
+        Ok(Self {
+            path: canonical_parent.join(file_name),
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ImageRecord {
@@ -35,6 +103,24 @@ pub(super) enum ImageUpdate {
 
 pub(crate) struct ImageIndex {
     conn: Connection,
+    path: PathBuf,
+}
+
+pub(crate) struct ReconciliationPlan {
+    missing: Vec<ImageFile>,
+    stale_paths: Vec<Vec<u8>>,
+}
+
+impl ReconciliationPlan {
+    pub(crate) fn missing(&self) -> &[ImageFile] {
+        &self.missing
+    }
+}
+
+struct CachedImageMetadata {
+    path: Vec<u8>,
+    mtime_ns: i64,
+    size: i64,
 }
 
 /// A complete replacement index that remains invisible until it is verified and installed.
@@ -49,73 +135,113 @@ pub(crate) struct StagedImageIndex {
 }
 
 impl ImageIndex {
-    pub(crate) fn open(root: &Path) -> Result<Self, VisionGrepError> {
-        let conn = Connection::open(root.join(INDEX_FILE_NAME))?;
-        Self::from_connection(conn)
+    pub(crate) fn exists(location: &IndexLocation) -> bool {
+        location.path.exists()
+    }
+
+    pub(crate) fn open(
+        location: &IndexLocation,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<Self, VisionGrepError> {
+        let conn = Connection::open(location.path())?;
+        Self::from_connection(conn, location.path().to_owned(), search_root, contract)
     }
 
     #[cfg(test)]
     fn in_memory() -> Result<Self, VisionGrepError> {
         let conn = Connection::open_in_memory()?;
-        Self::from_connection(conn)
+        Self::from_connection(
+            conn,
+            PathBuf::from("<memory>"),
+            Path::new("/test-root"),
+            test_contract(),
+        )
     }
 
-    /// Returns files whose path is absent or whose nanosecond mtime or size no longer matches.
+    /// Plans incremental reconciliation from one ordered cache read and one merge walk.
     ///
-    /// This is intentionally metadata-based; content hashing and rename reuse are not part of the
-    /// current cache contract.
-    pub(crate) fn images_needing_embedding(
+    /// Discovery and cached paths are both ordered by exact native Unix bytes. Content hashing and
+    /// rename reuse are deliberately outside the cache contract; nanosecond mtime and size remain
+    /// the change detector.
+    pub(crate) fn plan_reconciliation(
         &self,
         files: &[ImageFile],
-    ) -> Result<Vec<ImageFile>, VisionGrepError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT mtime_ns, size FROM images WHERE path = ?1")?;
+    ) -> Result<ReconciliationPlan, VisionGrepError> {
+        let cached = self.cached_image_metadata()?;
         let mut missing = Vec::new();
+        let mut stale_paths = Vec::new();
+        let mut discovered_index = 0;
+        let mut cached_index = 0;
 
-        for file in files {
-            let cached: Option<(i64, i64)> = stmt
-                .query_row([file.relative_path.as_os_str().as_bytes()], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })
-                .optional()?;
-
-            if cached != Some((file.mtime_ns, file.size)) {
-                missing.push(file.clone());
+        while let (Some(file), Some(cached_file)) =
+            (files.get(discovered_index), cached.get(cached_index))
+        {
+            match file
+                .relative_path
+                .as_os_str()
+                .as_bytes()
+                .cmp(&cached_file.path)
+            {
+                std::cmp::Ordering::Less => {
+                    missing.push(file.clone());
+                    discovered_index += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if (file.mtime_ns, file.size) != (cached_file.mtime_ns, cached_file.size) {
+                        missing.push(file.clone());
+                    }
+                    discovered_index += 1;
+                    cached_index += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    stale_paths.push(cached_file.path.clone());
+                    cached_index += 1;
+                }
             }
         }
+        missing.extend_from_slice(&files[discovered_index..]);
+        stale_paths.extend(
+            cached[cached_index..]
+                .iter()
+                .map(|cached_file| cached_file.path.clone()),
+        );
 
-        Ok(missing)
+        Ok(ReconciliationPlan {
+            missing,
+            stale_paths,
+        })
     }
 
-    /// Removes cached paths that no longer appear in the current recursive discovery result.
-    pub(crate) fn remove_stale_entries(
+    /// Applies the stale portion of a previously computed reconciliation plan atomically.
+    pub(crate) fn apply_reconciliation(
         &mut self,
-        files: &[ImageFile],
+        plan: &ReconciliationPlan,
     ) -> Result<(), VisionGrepError> {
-        let current_paths = files
-            .iter()
-            .map(|file| file.relative_path.as_os_str().as_bytes().to_vec())
-            .collect::<HashSet<_>>();
-        let cached_paths = {
-            let mut stmt = self.conn.prepare("SELECT path FROM images")?;
-            stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        let stale_paths: Vec<Vec<u8>> = cached_paths
-            .into_iter()
-            .filter(|path| !current_paths.contains(path))
-            .collect();
-
         let transaction = self.conn.transaction()?;
         {
             let mut stmt = transaction.prepare("DELETE FROM images WHERE path = ?1")?;
-            for path in stale_paths {
+            for path in &plan.stale_paths {
                 stmt.execute([path])?;
             }
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    fn cached_image_metadata(&self) -> Result<Vec<CachedImageMetadata>, VisionGrepError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, mtime_ns, size FROM images ORDER BY path")?;
+        stmt.query_map([], |row| {
+            Ok(CachedImageMetadata {
+                path: row.get(0)?,
+                mtime_ns: row.get(1)?,
+                size: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(VisionGrepError::Index)
     }
 
     pub(super) fn apply_updates(
@@ -220,18 +346,27 @@ impl ImageIndex {
         Ok(())
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, VisionGrepError> {
+    fn from_connection(
+        conn: Connection,
+        path: PathBuf,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<Self, VisionGrepError> {
         conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
-        let mut index = Self { conn };
-        index.init()?;
+        let mut index = Self { conn, path };
+        index.init(search_root, contract)?;
         Ok(index)
     }
 
     /// Initializes or migrates the persisted embedding contract transactionally.
     ///
-    /// Older cache versions are incompatible and rebuilt. A newer version is rejected so an older
-    /// binary cannot silently corrupt data whose schema or embedding semantics it does not know.
-    fn init(&mut self) -> Result<(), VisionGrepError> {
+    /// Version 2 is migrated without losing its known current embeddings. Contract changes clear
+    /// only the affected vector family, while a wrong-root reuse is rejected before mutation.
+    fn init(
+        &mut self,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<(), VisionGrepError> {
         let version = self
             .conn
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
@@ -242,11 +377,25 @@ impl ImageIndex {
             });
         }
 
+        if version == EMBEDDING_CACHE_VERSION {
+            let stored_root = self.required_metadata(ROOT_METADATA_KEY)?;
+            let stored_root = PathBuf::from(OsString::from_vec(stored_root));
+            if stored_root != search_root {
+                return Err(VisionGrepError::IndexRootMismatch {
+                    index: self.path.clone(),
+                    expected: search_root.to_owned(),
+                    found: stored_root,
+                });
+            }
+        }
+
+        let index_path = self.path.clone();
         let transaction = self.conn.transaction()?;
-        if version < EMBEDDING_CACHE_VERSION {
+        if version < 2 {
             transaction.execute_batch(
                 "DROP TABLE IF EXISTS images;
-                 DROP TABLE IF EXISTS queries;",
+                 DROP TABLE IF EXISTS queries;
+                 DROP TABLE IF EXISTS metadata;",
             )?;
         }
         transaction.execute_batch(
@@ -259,13 +408,75 @@ impl ImageIndex {
              CREATE TABLE IF NOT EXISTS queries (
                 query      TEXT PRIMARY KEY,
                 embedding  BLOB NOT NULL CHECK(length(embedding) = 2048)
+            );
+             CREATE TABLE IF NOT EXISTS metadata (
+                key        TEXT PRIMARY KEY,
+                value      BLOB NOT NULL
             );",
         )?;
+
+        if version < EMBEDDING_CACHE_VERSION {
+            set_metadata(
+                &transaction,
+                ROOT_METADATA_KEY,
+                search_root.as_os_str().as_bytes(),
+            )?;
+            set_metadata(
+                &transaction,
+                IMAGE_CONTRACT_METADATA_KEY,
+                contract.image.as_bytes(),
+            )?;
+            set_metadata(
+                &transaction,
+                QUERY_CONTRACT_METADATA_KEY,
+                contract.query.as_bytes(),
+            )?;
+        } else {
+            let stored_image_contract = required_transaction_metadata(
+                &transaction,
+                &index_path,
+                IMAGE_CONTRACT_METADATA_KEY,
+            )?;
+            if stored_image_contract != contract.image.as_bytes() {
+                transaction.execute("DELETE FROM images", [])?;
+                set_metadata(
+                    &transaction,
+                    IMAGE_CONTRACT_METADATA_KEY,
+                    contract.image.as_bytes(),
+                )?;
+            }
+
+            let stored_query_contract = required_transaction_metadata(
+                &transaction,
+                &index_path,
+                QUERY_CONTRACT_METADATA_KEY,
+            )?;
+            if stored_query_contract != contract.query.as_bytes() {
+                transaction.execute("DELETE FROM queries", [])?;
+                set_metadata(
+                    &transaction,
+                    QUERY_CONTRACT_METADATA_KEY,
+                    contract.query.as_bytes(),
+                )?;
+            }
+        }
         if version < EMBEDDING_CACHE_VERSION {
             transaction.pragma_update(None, "user_version", EMBEDDING_CACHE_VERSION)?;
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    fn required_metadata(&self, key: &'static str) -> Result<Vec<u8>, VisionGrepError> {
+        self.conn
+            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| VisionGrepError::IndexMetadataMissing {
+                path: self.path.clone(),
+                key,
+            })
     }
 
     fn close(self) -> Result<(), VisionGrepError> {
@@ -275,23 +486,64 @@ impl ImageIndex {
     }
 }
 
+fn set_metadata(
+    transaction: &rusqlite::Transaction<'_>,
+    key: &str,
+    value: &[u8],
+) -> Result<(), rusqlite::Error> {
+    transaction.execute(
+        "INSERT INTO metadata (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+fn required_transaction_metadata(
+    transaction: &rusqlite::Transaction<'_>,
+    index_path: &Path,
+    key: &'static str,
+) -> Result<Vec<u8>, VisionGrepError> {
+    transaction
+        .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .ok_or_else(|| VisionGrepError::IndexMetadataMissing {
+            path: index_path.to_owned(),
+            key,
+        })
+}
+
 impl StagedImageIndex {
-    pub(crate) fn create(root: &Path) -> Result<Self, VisionGrepError> {
+    pub(crate) fn create(
+        location: &IndexLocation,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<Self, VisionGrepError> {
+        let parent =
+            location
+                .path()
+                .parent()
+                .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName {
+                    path: location.path().to_owned(),
+                })?;
         let temporary = TempFileBuilder::new()
             .prefix(REINDEX_FILE_PREFIX)
-            .tempfile_in(root)
+            .tempfile_in(parent)
             .map_err(|source| VisionGrepError::IndexFile {
                 operation: "creating staged reindex",
-                path: root.to_owned(),
+                path: parent.to_owned(),
                 source,
             })?;
         let conn = Connection::open(temporary.path())?;
-        let index = ImageIndex::from_connection(conn)?;
+        let index =
+            ImageIndex::from_connection(conn, temporary.path().to_owned(), search_root, contract)?;
 
         Ok(Self {
             index,
             temporary,
-            destination: root.join(INDEX_FILE_NAME),
+            destination: location.path().to_owned(),
         })
     }
 
@@ -340,7 +592,22 @@ impl StagedImageIndex {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::time::Instant;
+
     use super::*;
+
+    fn local_location(root: &Path) -> IndexLocation {
+        IndexLocation::resolve(root, None).unwrap()
+    }
+
+    fn open_disk_index(root: &Path) -> ImageIndex {
+        ImageIndex::open(&local_location(root), root, test_contract()).unwrap()
+    }
+
+    fn create_staged_index(root: &Path) -> StagedImageIndex {
+        StagedImageIndex::create(&local_location(root), root, test_contract()).unwrap()
+    }
 
     fn embedding() -> NormalizedEmbedding {
         let mut values = vec![0.0; crate::embedding::EMBEDDING_DIM];
@@ -366,6 +633,56 @@ mod tests {
             .unwrap();
     }
 
+    fn populate_reconciliation_benchmark(index: &mut ImageIndex, files: &[ImageFile]) {
+        let transaction = index.conn.transaction().unwrap();
+        let bytes = embedding().to_le_bytes();
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO images (path, mtime_ns, size, embedding)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .unwrap();
+            for file in files {
+                statement
+                    .execute(params![
+                        file.relative_path.as_os_str().as_bytes(),
+                        file.mtime_ns,
+                        file.size,
+                        &bytes,
+                    ])
+                    .unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+    }
+
+    fn per_file_query_changed_count(index: &ImageIndex, files: &[ImageFile]) -> usize {
+        let mut statement = index
+            .conn
+            .prepare("SELECT mtime_ns, size FROM images WHERE path = ?1")
+            .unwrap();
+        files
+            .iter()
+            .filter(|file| {
+                let cached = statement
+                    .query_row([file.relative_path.as_os_str().as_bytes()], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                    })
+                    .optional()
+                    .unwrap();
+                cached != Some((file.mtime_ns, file.size))
+            })
+            .count()
+    }
+
+    fn duration_summary(mut samples: Vec<f64>) -> serde_json::Value {
+        samples.sort_by(f64::total_cmp);
+        let median = samples[samples.len() / 2];
+        let p95 = samples[(samples.len() * 95).div_ceil(100) - 1];
+        serde_json::json!({"samples": samples.len(), "median_ms": median, "p95_ms": p95})
+    }
+
     #[test]
     fn embedding_round_trips_through_bytes() {
         let embedding = embedding();
@@ -388,7 +705,13 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].path, PathBuf::from("photos/image.jpg"));
         assert_eq!(records[0].embedding, embedding());
-        assert!(index.images_needing_embedding(&[file]).unwrap().is_empty());
+        assert!(
+            index
+                .plan_reconciliation(&[file])
+                .unwrap()
+                .missing()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -398,18 +721,194 @@ mod tests {
         let renamed_file = image_file(PathBuf::from("new-name.jpg"));
 
         insert(&mut index, &old_file);
-        index
-            .remove_stale_entries(std::slice::from_ref(&renamed_file))
+        let plan = index
+            .plan_reconciliation(std::slice::from_ref(&renamed_file))
             .unwrap();
+        index.apply_reconciliation(&plan).unwrap();
 
         assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
-        assert_eq!(
+        assert_eq!(plan.missing().len(), 1);
+    }
+
+    #[test]
+    fn bulk_reconciliation_preserves_unchanged_and_detects_metadata_changes() {
+        let mut index = ImageIndex::in_memory().unwrap();
+        let unchanged = image_file(PathBuf::from("a.jpg"));
+        let changed = image_file(PathBuf::from("b.jpg"));
+        insert(&mut index, &unchanged);
+        insert(&mut index, &changed);
+        let changed = ImageFile {
+            relative_path: changed.relative_path,
+            mtime_ns: changed.mtime_ns + 1,
+            size: changed.size,
+        };
+
+        let plan = index
+            .plan_reconciliation(&[unchanged, changed.clone()])
+            .unwrap();
+
+        assert_eq!(plan.missing().len(), 1);
+        assert_eq!(plan.missing()[0].relative_path, changed.relative_path);
+        index.apply_reconciliation(&plan).unwrap();
+        assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn bulk_reconciliation_handles_discovered_paths_before_and_after_cached_paths() {
+        let mut index = ImageIndex::in_memory().unwrap();
+        let cached = image_file(PathBuf::from("middle.jpg"));
+        insert(&mut index, &cached);
+        let first = image_file(PathBuf::from("first.jpg"));
+        let last = image_file(PathBuf::from("z-last.jpg"));
+
+        let plan = index
+            .plan_reconciliation(&[first.clone(), cached, last.clone()])
+            .unwrap();
+
+        assert_eq!(plan.missing().len(), 2);
+        assert_eq!(plan.missing()[0].relative_path, first.relative_path);
+        assert_eq!(plan.missing()[1].relative_path, last.relative_path);
+    }
+
+    #[test]
+    #[ignore = "release benchmark for bulk index reconciliation"]
+    fn reconciliation_performance_matrix() {
+        let mut results = Vec::new();
+        for corpus_size in [10_000, 100_000] {
+            let files = (0..corpus_size)
+                .map(|number| image_file(PathBuf::from(format!("image-{number:06}.jpg"))))
+                .collect::<Vec<_>>();
+            let mut changed = files.clone();
+            for file in changed.iter_mut().step_by(100) {
+                file.mtime_ns += 1;
+            }
+
+            let mut index = ImageIndex::in_memory().unwrap();
+            populate_reconciliation_benchmark(&mut index, &files);
+            for (scenario, discovered, expected_changed) in [
+                ("unchanged", &files, 0),
+                ("one_percent_changed", &changed, corpus_size / 100),
+            ] {
+                let mut per_file_samples = Vec::new();
+                let mut bulk_samples = Vec::new();
+                for _ in 0..21 {
+                    let started = Instant::now();
+                    let actual = per_file_query_changed_count(&index, discovered);
+                    per_file_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+                    assert_eq!(actual, expected_changed);
+
+                    let started = Instant::now();
+                    let plan = index.plan_reconciliation(discovered).unwrap();
+                    bulk_samples.push(started.elapsed().as_secs_f64() * 1_000.0);
+                    assert_eq!(plan.missing().len(), expected_changed);
+                    assert!(plan.stale_paths.is_empty());
+                }
+                results.push(serde_json::json!({
+                    "corpus_size": corpus_size,
+                    "scenario": scenario,
+                    "per_file_queries": duration_summary(per_file_samples),
+                    "ordered_bulk_pass": duration_summary(bulk_samples),
+                }));
+            }
+        }
+        println!("{}", serde_json::to_string(&results).unwrap());
+    }
+
+    #[test]
+    fn image_and_query_contracts_are_invalidated_independently() {
+        let directory = tempfile::tempdir().unwrap();
+        let location = local_location(directory.path());
+        let file = image_file(PathBuf::from("image.jpg"));
+        let query_embedding = embedding();
+        {
+            let mut index = ImageIndex::open(&location, directory.path(), test_contract()).unwrap();
+            insert(&mut index, &file);
             index
-                .images_needing_embedding(&[renamed_file])
-                .unwrap()
-                .len(),
-            1
+                .upsert_query_embedding("cached query", &query_embedding)
+                .unwrap();
+        }
+
+        let image_changed = EmbeddingContract {
+            image: "changed-image-contract",
+            query: test_contract().query,
+        };
+        {
+            let mut index = ImageIndex::open(&location, directory.path(), image_changed).unwrap();
+            assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
+            assert_eq!(
+                index.query_embedding("cached query").unwrap(),
+                Some(query_embedding.clone())
+            );
+            insert(&mut index, &file);
+        }
+
+        let query_changed = EmbeddingContract {
+            image: image_changed.image,
+            query: "changed-query-contract",
+        };
+        let index = ImageIndex::open(&location, directory.path(), query_changed).unwrap();
+        assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 1);
+        assert!(index.query_embedding("cached query").unwrap().is_none());
+    }
+
+    #[test]
+    fn custom_index_rejects_reuse_for_another_search_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_root = directory.path().join("first");
+        let second_root = directory.path().join("second");
+        fs::create_dir(&first_root).unwrap();
+        fs::create_dir(&second_root).unwrap();
+        let index_path = directory.path().join("shared.db");
+        let location = IndexLocation::resolve(&first_root, Some(&index_path)).unwrap();
+        drop(ImageIndex::open(&location, &first_root, test_contract()).unwrap());
+
+        let error = match ImageIndex::open(&location, &second_root, test_contract()) {
+            Ok(_) => panic!("wrong-root index reuse unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, VisionGrepError::IndexRootMismatch { .. }));
+    }
+
+    #[test]
+    fn custom_index_does_not_write_inside_search_root() {
+        let root = tempfile::tempdir().unwrap();
+        let index_directory = tempfile::tempdir().unwrap();
+        let index_path = index_directory.path().join("external.db");
+        let location = IndexLocation::resolve(root.path(), Some(&index_path)).unwrap();
+
+        drop(ImageIndex::open(&location, root.path(), test_contract()).unwrap());
+
+        assert!(index_path.exists());
+        assert!(!root.path().join(INDEX_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn relative_custom_index_is_resolved_from_working_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let working_directory = std::env::current_dir().unwrap().canonicalize().unwrap();
+
+        let location = IndexLocation::resolve(root.path(), Some(Path::new("relative.db"))).unwrap();
+
+        assert_eq!(location.path(), working_directory.join("relative.db"));
+    }
+
+    #[test]
+    fn staged_custom_index_lives_beside_its_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let index_directory = tempfile::tempdir().unwrap();
+        let location =
+            IndexLocation::resolve(root.path(), Some(&index_directory.path().join("index.db")))
+                .unwrap();
+        let staged = StagedImageIndex::create(&location, root.path(), test_contract()).unwrap();
+        let expected_parent = index_directory.path().canonicalize().unwrap();
+
+        assert_eq!(
+            staged.temporary.path().parent(),
+            Some(expected_parent.as_path())
         );
+        staged.install().unwrap();
+        assert!(location.path().exists());
     }
 
     #[test]
@@ -442,7 +941,13 @@ mod tests {
         )
         .unwrap();
 
-        let index = ImageIndex::from_connection(conn).unwrap();
+        let index = ImageIndex::from_connection(
+            conn,
+            PathBuf::from("<memory>"),
+            Path::new("/test-root"),
+            test_contract(),
+        )
+        .unwrap();
 
         assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
         let version = index
@@ -450,6 +955,67 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap();
         assert_eq!(version, EMBEDDING_CACHE_VERSION);
+    }
+
+    #[test]
+    fn version_two_index_migrates_without_losing_known_embeddings() {
+        let directory = tempfile::tempdir().unwrap();
+        let location = local_location(directory.path());
+        let conn = Connection::open(location.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE images (
+                path BLOB PRIMARY KEY,
+                mtime_ns INTEGER NOT NULL,
+                size INTEGER NOT NULL,
+                embedding BLOB NOT NULL CHECK(length(embedding) = 2048)
+             );
+             CREATE TABLE queries (
+                query TEXT PRIMARY KEY,
+                embedding BLOB NOT NULL CHECK(length(embedding) = 2048)
+             );
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO images (path, mtime_ns, size, embedding) VALUES (?1, 10, 20, ?2)",
+            params![b"image.jpg", embedding().to_le_bytes()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let index = ImageIndex::open(&location, directory.path(), test_contract()).unwrap();
+
+        assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 1);
+        assert_eq!(
+            index
+                .conn
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            EMBEDDING_CACHE_VERSION
+        );
+    }
+
+    #[test]
+    fn current_schema_without_root_metadata_is_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let location = local_location(directory.path());
+        let conn = Connection::open(location.path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE metadata (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = match ImageIndex::open(&location, directory.path(), test_contract()) {
+            Ok(_) => panic!("index without root metadata unexpectedly opened"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            VisionGrepError::IndexMetadataMissing { .. }
+        ));
     }
 
     #[test]
@@ -524,14 +1090,14 @@ mod tests {
         let original_file = image_file(PathBuf::from("original.jpg"));
         let original_query = embedding();
         {
-            let mut original = ImageIndex::open(directory.path()).unwrap();
+            let mut original = open_disk_index(directory.path());
             insert(&mut original, &original_file);
             original
                 .upsert_query_embedding("cached query", &original_query)
                 .unwrap();
         }
 
-        let mut staged = StagedImageIndex::create(directory.path()).unwrap();
+        let mut staged = create_staged_index(directory.path());
         let first_batch = (0..super::super::ingest::INDEX_BATCH_SIZE)
             .map(|number| ImageUpdate::Upsert {
                 file: image_file(PathBuf::from(format!("staged-{number}.jpg"))),
@@ -541,7 +1107,7 @@ mod tests {
         staged.index_mut().apply_updates(first_batch).unwrap();
 
         // A reader opening the active path during the rebuild still sees the complete old index.
-        let concurrent_reader = ImageIndex::open(directory.path()).unwrap();
+        let concurrent_reader = open_disk_index(directory.path());
         assert_eq!(
             concurrent_reader
                 .all_embeddings(Path::new(""))
@@ -571,7 +1137,7 @@ mod tests {
         assert!(staged.index_mut().apply_updates(later_batch).is_err());
         drop(staged);
 
-        let original = ImageIndex::open(directory.path()).unwrap();
+        let original = open_disk_index(directory.path());
         let records = original.all_embeddings(Path::new("")).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].path, original_file.relative_path);
@@ -586,15 +1152,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let old_file = image_file(PathBuf::from("old.jpg"));
         {
-            let mut original = ImageIndex::open(directory.path()).unwrap();
+            let mut original = open_disk_index(directory.path());
             insert(&mut original, &old_file);
         }
 
         let new_file = image_file(PathBuf::from("new.jpg"));
-        let mut staged = StagedImageIndex::create(directory.path()).unwrap();
+        let mut staged = create_staged_index(directory.path());
         insert(staged.index_mut(), &new_file);
         staged.install().unwrap();
-        let installed = ImageIndex::open(directory.path()).unwrap();
+        let installed = open_disk_index(directory.path());
 
         let records = installed.all_embeddings(Path::new("")).unwrap();
         assert_eq!(records.len(), 1);

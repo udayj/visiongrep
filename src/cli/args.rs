@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use super::terminal::OutputFormat;
-use crate::application::{CacheMode, SearchRequest};
+use crate::application::{ArtifactVerification, CacheMode, SearchRequest};
 use crate::ranking::DEFAULT_SIMILARITY_THRESHOLD;
+use crate::timing::TimingDestination;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -52,14 +53,43 @@ pub(crate) struct Cli {
     #[arg(long = "no-cache", help = "Skip reading and writing the index cache")]
     no_cache: bool,
 
+    #[arg(
+        long = "index-path",
+        value_name = "PATH",
+        conflicts_with = "no_cache",
+        help = "Store the index at PATH instead of inside the searched directory"
+    )]
+    index_path: Option<PathBuf>,
+
     #[arg(short = 'q', long = "quiet", help = "Suppress progress output")]
     quiet: bool,
+
+    #[arg(
+        long = "verify-models",
+        help = "Fully re-hash each model artifact required by this search"
+    )]
+    verify_models: bool,
+
+    #[arg(
+        long = "timing",
+        help = "Write one machine-readable phase timing report to stderr"
+    )]
+    timing: bool,
+
+    #[arg(
+        long = "timing-file",
+        value_name = "PATH",
+        requires = "timing",
+        help = "Write the --timing report to PATH instead of stderr"
+    )]
+    timing_file: Option<PathBuf>,
 }
 
 pub(crate) struct Command {
     pub(crate) request: SearchRequest,
     pub(crate) output_format: OutputFormat,
     pub(crate) quiet: bool,
+    pub(crate) timing_destination: Option<TimingDestination>,
 }
 
 impl Cli {
@@ -88,9 +118,18 @@ impl Cli {
                 self.top,
                 self.threshold,
                 cache_mode,
+                self.index_path,
+                if self.verify_models {
+                    ArtifactVerification::Full
+                } else {
+                    ArtifactVerification::Fast
+                },
             ),
             output_format,
             quiet: self.quiet,
+            timing_destination: self
+                .timing
+                .then(|| TimingDestination::new(self.timing_file)),
         }
     }
 }
@@ -167,5 +206,34 @@ mod tests {
             cli.into_command().output_format,
             OutputFormat::PathsNull
         ));
+    }
+
+    #[test]
+    fn timing_file_requires_timing() {
+        assert!(
+            Cli::try_parse_from([
+                "visiongrep",
+                "robot",
+                "photos",
+                "--timing-file",
+                "timing.json",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn custom_index_conflicts_with_no_cache() {
+        assert!(
+            Cli::try_parse_from([
+                "visiongrep",
+                "robot",
+                "photos",
+                "--index-path",
+                "index.db",
+                "--no-cache",
+            ])
+            .is_err()
+        );
     }
 }

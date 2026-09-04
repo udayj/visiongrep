@@ -1,0 +1,150 @@
+name: Heavy retrieval and performance benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      corpus_size:
+        description: Pinned COCO validation images to materialize
+        required: true
+        default: "500"
+      performance_samples:
+        description: Repetitions per phase-timing scenario (21 enables p95)
+        required: true
+        default: "21"
+      include_network_scenario:
+        description: Measure the variable no-model/no-index download scenario
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      MODEL_CACHE: ${{ github.workspace }}/.benchmark-model-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: yurijmikhalevich/rclip
+          ref: v3.3.0
+          path: .benchmark-rclip
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.89.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.MODEL_CACHE }}
+          key: retrieval-models-3f7e6f94-ee267cd6-c68d3d9a-4dbe762b
+      - name: Verify and install pinned rclip environment
+        run: |
+          test "$(git -C .benchmark-rclip rev-parse HEAD)" = 3dcec2de5e23311473f6fb6433e602aa4f4ca812
+          python -m pip install uv==0.11.12
+          uv sync --project .benchmark-rclip --frozen --no-dev --python 3.12
+      - name: Download and verify benchmark model artifacts
+        run: |
+          mkdir -p "$MODEL_CACHE"
+          download() { if [ ! -f "$1" ]; then curl -L --fail --retry 5 --retry-all-errors -o "$1" "$2"; fi; }
+          download "$MODEL_CACHE/visual.onnx" \
+            https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/visual.onnx
+          download "$MODEL_CACHE/textual.onnx" \
+            https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/textual.onnx
+          download "$MODEL_CACHE/bpe_simple_vocab_16e6.txt.gz" \
+            https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/tokenizer/bpe_simple_vocab_16e6.txt.gz
+          download "$MODEL_CACHE/datacomp_tokenizer.json" \
+            https://huggingface.co/laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K/resolve/4afec35ffe57a943d569ff7ee888061830164da8/tokenizer.json
+          download "$MODEL_CACHE/qdrant_vision.onnx" \
+            https://huggingface.co/Qdrant/clip-ViT-B-32-vision/resolve/a636590e595dbbd798647c9dd4550d5652fba969/model.onnx
+          download "$MODEL_CACHE/qdrant_text.onnx" \
+            https://huggingface.co/Qdrant/clip-ViT-B-32-text/resolve/48ca1db27cb4063eb311ec2aa7f087a808112876/model.onnx
+          download "$MODEL_CACHE/qdrant_tokenizer.json" \
+            https://huggingface.co/Qdrant/clip-ViT-B-32-text/resolve/48ca1db27cb4063eb311ec2aa7f087a808112876/tokenizer.json
+          echo '3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c  '"$MODEL_CACHE/visual.onnx" | sha256sum -c -
+          echo 'ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc  '"$MODEL_CACHE/textual.onnx" | sha256sum -c -
+          echo '924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a  '"$MODEL_CACHE/bpe_simple_vocab_16e6.txt.gz" | sha256sum -c -
+          echo '72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85  '"$MODEL_CACHE/datacomp_tokenizer.json" | sha256sum -c -
+          echo 'c68d3d9a200ddd2a8c8a5510b576d4c94d1ae383bf8b36dd8c084f94e1fb4d63  '"$MODEL_CACHE/qdrant_vision.onnx" | sha256sum -c -
+          echo '4dbe762b11e36488304471e439cde89da053ad7acaddbf9e096745d142ec8d8b  '"$MODEL_CACHE/qdrant_text.onnx" | sha256sum -c -
+          echo 'b68d571997a1f81bf521fb73806740ddb91e4ed6666cb6e996c066bb289cf55b  '"$MODEL_CACHE/qdrant_tokenizer.json" | sha256sum -c -
+      - name: Materialize pinned corpus outside the checkout
+        run: |
+          .benchmark-rclip/.venv/bin/python benchmarks/retrieval/prepare_coco.py \
+            --output "$RUNNER_TEMP/coco" --count "${{ inputs.corpus_size || '500' }}" --workers 8
+          .benchmark-rclip/.venv/bin/python benchmarks/retrieval/generate_fixtures.py \
+            --output "$RUNNER_TEMP/coco/images" > "$RUNNER_TEMP/generated-fixtures.json"
+      - name: Build candidate and pinned baseline
+        run: |
+          cargo build --release
+          git worktree add --detach "$RUNNER_TEMP/visiongrep-baseline" 09564b0f03764f4d51852f9c698a78395b0d0bc8
+          CARGO_TARGET_DIR="$RUNNER_TEMP/target-baseline" cargo build --release \
+            --manifest-path "$RUNNER_TEMP/visiongrep-baseline/Cargo.toml"
+      - name: Stage verified model caches
+        run: |
+          mkdir -p "$RUNNER_TEMP/visiongrep-cache/visiongrep/models"
+          cp "$MODEL_CACHE/visual.onnx" "$RUNNER_TEMP/visiongrep-cache/visiongrep/models/datacomp_vision.onnx"
+          cp "$MODEL_CACHE/textual.onnx" "$RUNNER_TEMP/visiongrep-cache/visiongrep/models/datacomp_text.onnx"
+          cp "$MODEL_CACHE/datacomp_tokenizer.json" "$RUNNER_TEMP/visiongrep-cache/visiongrep/models/datacomp_tokenizer.json"
+          mkdir -p "$RUNNER_TEMP/baseline-home/.cache/visiongrep/models"
+          cp "$MODEL_CACHE/qdrant_vision.onnx" "$RUNNER_TEMP/baseline-home/.cache/visiongrep/models/clip_vision.onnx"
+          cp "$MODEL_CACHE/qdrant_text.onnx" "$RUNNER_TEMP/baseline-home/.cache/visiongrep/models/clip_text.onnx"
+          cp "$MODEL_CACHE/qdrant_tokenizer.json" "$RUNNER_TEMP/baseline-home/.cache/visiongrep/models/tokenizer.json"
+      - name: Run shared retrieval benchmark
+        run: |
+          RCLIP_PY=.benchmark-rclip/.venv/bin/python
+          "$RCLIP_PY" benchmarks/retrieval/run_visiongrep.py \
+            --binary target/release/visiongrep \
+            --corpus-dir "$RUNNER_TEMP/coco/images" --corpus-manifest "$RUNNER_TEMP/coco/corpus.json" \
+            --query-manifest benchmarks/retrieval/query_manifest.json \
+            --output "$RUNNER_TEMP/datacomp.json" --cache-home "$RUNNER_TEMP/visiongrep-cache" \
+            --system visiongrep-datacomp --commit "$GITHUB_SHA" \
+            --model-contract openclip-vit-b-32-256-datacomp-s34b-b86k-v1 \
+            --index-path "$RUNNER_TEMP/datacomp.db" --timing-dir "$RUNNER_TEMP/datacomp-timing"
+          "$RCLIP_PY" benchmarks/retrieval/run_visiongrep.py \
+            --binary "$RUNNER_TEMP/target-baseline/release/visiongrep" \
+            --corpus-dir "$RUNNER_TEMP/coco/images" --corpus-manifest "$RUNNER_TEMP/coco/corpus.json" \
+            --query-manifest benchmarks/retrieval/query_manifest.json \
+            --output "$RUNNER_TEMP/baseline.json" --cache-home "$RUNNER_TEMP/baseline-home" \
+            --system visiongrep-baseline --commit 09564b0f03764f4d51852f9c698a78395b0d0bc8 \
+            --model-contract qdrant-clip-vit-b-32-224-v1
+          "$RCLIP_PY" benchmarks/retrieval/run_rclip.py \
+            --rclip-source .benchmark-rclip --artifact-dir "$MODEL_CACHE" \
+            --data-dir "$RUNNER_TEMP/rclip-data" \
+            --corpus-dir "$RUNNER_TEMP/coco/images" --corpus-manifest "$RUNNER_TEMP/coco/corpus.json" \
+            --query-manifest benchmarks/retrieval/query_manifest.json --output "$RUNNER_TEMP/rclip.json"
+          PYTHONPATH=benchmarks/retrieval "$RCLIP_PY" benchmarks/retrieval/evaluate.py \
+            "$RUNNER_TEMP/baseline.json" "$RUNNER_TEMP/rclip.json" "$RUNNER_TEMP/datacomp.json" \
+            --output "$RUNNER_TEMP/retrieval-summary.json"
+          PYTHONPATH=benchmarks/retrieval "$RCLIP_PY" benchmarks/retrieval/compare_behavior.py \
+            --reference "$RUNNER_TEMP/rclip.json" --candidate "$RUNNER_TEMP/datacomp.json" \
+            --output "$RUNNER_TEMP/rclip-datacomp-behavior.json" --report-only
+      - name: Run repeated phase timing scenarios
+        run: |
+          NETWORK_FLAG=''
+          if [ "${{ github.event_name == 'push' || inputs.include_network_scenario }}" = true ]; then NETWORK_FLAG='--include-network'; fi
+          .benchmark-rclip/.venv/bin/python benchmarks/performance/run_scenarios.py \
+            --binary target/release/visiongrep --corpus "$RUNNER_TEMP/coco/images" \
+            --cache-home "$RUNNER_TEMP/visiongrep-cache" --output "$RUNNER_TEMP/phase-timing" \
+            --samples "${{ inputs.performance_samples || '21' }}" $NETWORK_FLAG
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retrieval-performance-reports
+          path: |
+            ${{ runner.temp }}/retrieval-summary.json
+            ${{ runner.temp }}/rclip-datacomp-behavior.json
+            ${{ runner.temp }}/generated-fixtures.json
+            ${{ runner.temp }}/phase-timing/summary.json
+            ${{ runner.temp }}/baseline.json
+            ${{ runner.temp }}/rclip.json
+            ${{ runner.temp }}/datacomp.json
+          if-no-files-found: warn
+          retention-days: 14

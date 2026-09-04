@@ -1,11 +1,16 @@
-use crate::embedding::{NormalizedEmbedding, embed_image};
-use crate::error::VisionGrepError;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::embedding::{NormalizedEmbedding, PreparedImage, embed_prepared_images, prepare_image};
+use crate::error::{ImagePreparationError, VisionGrepError};
 use crate::model::VisionSession;
+use crate::timing::{Phase, TimingRecorder};
 
 use super::scan::{ImageFile, SearchRoot};
 use super::store::{ImageIndex, ImageRecord, ImageUpdate};
 
 pub(super) const INDEX_BATCH_SIZE: usize = 256;
+const VISION_BATCH_SIZE: usize = 8;
+const MAX_PREPROCESSING_WORKERS: usize = 4;
 
 pub(crate) enum IngestEvent {
     Started { total: u64 },
@@ -25,25 +30,32 @@ pub(crate) fn ingest_into_index(
     files: &[ImageFile],
     session: &mut VisionSession,
     on_event: &mut impl FnMut(IngestEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
     report_started(files.len(), on_event)?;
     let result = (|| {
         for files in files.chunks(INDEX_BATCH_SIZE) {
             let mut updates = Vec::with_capacity(files.len());
-            for file in files {
-                let update = match embed_image_with_skip_policy(root, file, session, on_event)? {
-                    Some(embedding) => ImageUpdate::Upsert {
-                        file: file.clone(),
-                        embedding,
-                    },
-                    None => ImageUpdate::Delete {
-                        relative_path: file.relative_path.clone(),
-                    },
-                };
-                updates.push(update);
-                on_event(IngestEvent::ImageProcessed);
+            for files in files.chunks(VISION_BATCH_SIZE) {
+                let embeddings =
+                    embed_image_batch_with_skip_policy(root, files, session, on_event, timing)?;
+                for (file, embedding) in files.iter().zip(embeddings) {
+                    let update = match embedding {
+                        Some(embedding) => ImageUpdate::Upsert {
+                            file: file.clone(),
+                            embedding,
+                        },
+                        None => ImageUpdate::Delete {
+                            relative_path: file.relative_path.clone(),
+                        },
+                    };
+                    updates.push(update);
+                    on_event(IngestEvent::ImageProcessed);
+                }
             }
+            let writes_started = timing.start();
             index.apply_updates(updates)?;
+            timing.record(Phase::DatabaseWrites, writes_started);
         }
         Ok(())
     })();
@@ -57,18 +69,23 @@ pub(crate) fn embed_images(
     files: &[ImageFile],
     session: &mut VisionSession,
     on_event: &mut impl FnMut(IngestEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<Vec<ImageRecord>, VisionGrepError> {
     report_started(files.len(), on_event)?;
     let result = (|| {
         let mut records = Vec::with_capacity(files.len());
-        for file in files {
-            if let Some(embedding) = embed_image_with_skip_policy(root, file, session, on_event)? {
-                records.push(ImageRecord {
-                    path: root.display_image_path(&file.relative_path),
-                    embedding,
-                });
+        for files in files.chunks(VISION_BATCH_SIZE) {
+            let embeddings =
+                embed_image_batch_with_skip_policy(root, files, session, on_event, timing)?;
+            for (file, embedding) in files.iter().zip(embeddings) {
+                if let Some(embedding) = embedding {
+                    records.push(ImageRecord {
+                        path: root.display_image_path(&file.relative_path),
+                        embedding,
+                    });
+                }
+                on_event(IngestEvent::ImageProcessed);
             }
-            on_event(IngestEvent::ImageProcessed);
         }
         Ok(records)
     })();
@@ -88,22 +105,276 @@ fn report_started(
     Ok(())
 }
 
-fn embed_image_with_skip_policy(
+fn embed_image_batch_with_skip_policy(
     root: &SearchRoot,
-    file: &ImageFile,
+    files: &[ImageFile],
     session: &mut VisionSession,
     on_event: &mut impl FnMut(IngestEvent),
-) -> Result<Option<NormalizedEmbedding>, VisionGrepError> {
-    match embed_image(&root.image_path(&file.relative_path), session) {
-        Ok(embedding) => Ok(Some(embedding)),
-        Err(
-            error @ (VisionGrepError::ImageDecode { .. }
-            | VisionGrepError::ImageTooLarge { .. }
-            | VisionGrepError::InvalidImageDimensions { .. }),
-        ) => {
-            on_event(IngestEvent::ImageSkipped(error));
-            Ok(None)
+    timing: &mut TimingRecorder,
+) -> Result<Vec<Option<NormalizedEmbedding>>, VisionGrepError> {
+    let prepared = prepare_images_parallel(root, files, timing)?;
+    infer_prepared_batch(files.len(), prepared, on_event, |valid_images| {
+        embed_prepared_images(valid_images, session, timing)
+    })
+}
+
+fn infer_prepared_batch(
+    file_count: usize,
+    prepared: Vec<Result<PreparedImage, ImagePreparationError>>,
+    on_event: &mut impl FnMut(IngestEvent),
+    infer: impl FnOnce(Vec<PreparedImage>) -> Result<Vec<NormalizedEmbedding>, VisionGrepError>,
+) -> Result<Vec<Option<NormalizedEmbedding>>, VisionGrepError> {
+    let mut valid_indices = Vec::with_capacity(file_count);
+    let mut valid_images = Vec::with_capacity(file_count);
+    for (index, result) in prepared.into_iter().enumerate() {
+        match result {
+            Ok(image) => {
+                valid_indices.push(index);
+                valid_images.push(image);
+            }
+            Err(error) => on_event(IngestEvent::ImageSkipped(error.into())),
         }
-        Err(error) => Err(error),
+    }
+
+    let expected = valid_indices.len();
+    let embeddings = infer(valid_images)?;
+    if embeddings.len() != expected {
+        return Err(VisionGrepError::ImageBatchResultCount {
+            expected,
+            actual: embeddings.len(),
+        });
+    }
+    let mut ordered = (0..file_count).map(|_| None).collect::<Vec<_>>();
+    for (index, embedding) in valid_indices.into_iter().zip(embeddings) {
+        ordered[index] = Some(embedding);
+    }
+    Ok(ordered)
+}
+
+fn prepare_images_parallel(
+    root: &SearchRoot,
+    files: &[ImageFile],
+    timing: &TimingRecorder,
+) -> Result<Vec<Result<PreparedImage, ImagePreparationError>>, VisionGrepError> {
+    let available = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    let worker_count = available.min(MAX_PREPROCESSING_WORKERS).min(files.len());
+    prepare_images_with_workers(root, files, timing.is_enabled(), worker_count)
+}
+
+fn prepare_images_with_workers(
+    root: &SearchRoot,
+    files: &[ImageFile],
+    measure_timing: bool,
+    worker_count: usize,
+) -> Result<Vec<Result<PreparedImage, ImagePreparationError>>, VisionGrepError> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let worker_count = worker_count.max(1).min(files.len());
+    let next_index = AtomicUsize::new(0);
+    let mut indexed_results = std::thread::scope(|scope| {
+        let mut workers = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            workers.push(scope.spawn(|| {
+                let mut results = Vec::new();
+                loop {
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    let Some(file) = files.get(index) else {
+                        break;
+                    };
+                    results.push((
+                        index,
+                        prepare_image(&root.image_path(&file.relative_path), measure_timing),
+                    ));
+                }
+                results
+            }));
+        }
+
+        let mut results = Vec::with_capacity(files.len());
+        for worker in workers {
+            let mut worker_results = worker
+                .join()
+                .map_err(|_| VisionGrepError::ImagePreprocessingWorkerPanicked)?;
+            results.append(&mut worker_results);
+        }
+        Ok::<_, VisionGrepError>(results)
+    })?;
+
+    indexed_results.sort_by_key(|(index, _)| *index);
+    let mut ordered = Vec::with_capacity(files.len());
+    let mut indexed_results = indexed_results.into_iter();
+    for expected in 0..files.len() {
+        let Some((actual, result)) = indexed_results.next() else {
+            return Err(VisionGrepError::ImagePreprocessingResultOrder {
+                expected,
+                actual: None,
+            });
+        };
+        if actual != expected {
+            return Err(VisionGrepError::ImagePreprocessingResultOrder {
+                expected,
+                actual: Some(actual),
+            });
+        }
+        ordered.push(result);
+    }
+    Ok(ordered)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::Instant;
+
+    use image::{ImageFormat, Rgb, RgbImage};
+
+    use super::*;
+    use crate::index::discover_images;
+
+    fn write_test_image(path: &std::path::Path, seed: u8) {
+        let image = RgbImage::from_fn(96, 64, |x, y| {
+            Rgb([
+                seed.wrapping_add(x as u8),
+                seed.wrapping_add(y as u8),
+                seed.wrapping_add((x + y) as u8),
+            ])
+        });
+        image.save_with_format(path, ImageFormat::Png).unwrap();
+    }
+
+    #[test]
+    fn parallel_preprocessing_is_deterministic_and_ordered() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..8 {
+            write_test_image(
+                &directory.path().join(format!("{index:02}.png")),
+                index as u8,
+            );
+        }
+        let root = SearchRoot::resolve(directory.path()).unwrap();
+        let files = discover_images(&root).unwrap();
+
+        let single = prepare_images_with_workers(&root, &files, false, 1).unwrap();
+        let parallel = prepare_images_with_workers(&root, &files, false, 4).unwrap();
+
+        for (single, parallel) in single.into_iter().zip(parallel) {
+            assert_eq!(single.unwrap().values, parallel.unwrap().values);
+        }
+    }
+
+    #[test]
+    fn parallel_preprocessing_propagates_errors_at_the_original_position() {
+        let directory = tempfile::tempdir().unwrap();
+        write_test_image(&directory.path().join("00.png"), 1);
+        fs::write(directory.path().join("01.png"), b"not an image").unwrap();
+        write_test_image(&directory.path().join("02.png"), 2);
+        let root = SearchRoot::resolve(directory.path()).unwrap();
+        let files = discover_images(&root).unwrap();
+
+        let results = prepare_images_with_workers(&root, &files, false, 3).unwrap();
+
+        assert!(results[0].is_ok());
+        assert!(matches!(
+            results[1],
+            Err(ImagePreparationError::Decode { .. })
+        ));
+        assert!(results[2].is_ok());
+    }
+
+    #[test]
+    fn batch_inference_errors_abort_without_dropping_images() {
+        let directory = tempfile::tempdir().unwrap();
+        write_test_image(&directory.path().join("00.png"), 1);
+        write_test_image(&directory.path().join("01.png"), 2);
+        let root = SearchRoot::resolve(directory.path()).unwrap();
+        let files = discover_images(&root).unwrap();
+        let prepared = prepare_images_with_workers(&root, &files, false, 2).unwrap();
+
+        let error = infer_prepared_batch(files.len(), prepared, &mut |_| {}, |_| {
+            Err(VisionGrepError::Io(std::io::Error::other(
+                "injected inference failure",
+            )))
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, VisionGrepError::Io(_)));
+    }
+
+    #[test]
+    fn incomplete_batch_results_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        write_test_image(&directory.path().join("00.png"), 1);
+        write_test_image(&directory.path().join("01.png"), 2);
+        let root = SearchRoot::resolve(directory.path()).unwrap();
+        let files = discover_images(&root).unwrap();
+        let prepared = prepare_images_with_workers(&root, &files, false, 2).unwrap();
+
+        let error = infer_prepared_batch(files.len(), prepared, &mut |_| {}, |_| Ok(Vec::new()))
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            VisionGrepError::ImageBatchResultCount {
+                expected: 2,
+                actual: 0
+            }
+        ));
+    }
+
+    #[test]
+    #[ignore = "release benchmark requiring VISIONGREP_PREPROCESS_DATASET"]
+    fn preprocessing_worker_matrix() {
+        let directory = std::env::var_os("VISIONGREP_PREPROCESS_DATASET")
+            .map(std::path::PathBuf::from)
+            .expect("VISIONGREP_PREPROCESS_DATASET must name a remote image corpus");
+        let samples = std::env::var("VISIONGREP_PREPROCESS_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(5);
+        assert!(samples > 0);
+        let root = SearchRoot::resolve(&directory).unwrap();
+        let files = discover_images(&root).unwrap();
+        assert!(!files.is_empty());
+
+        let mut reports = Vec::new();
+        let mut expected_checksum = None;
+        for worker_count in [1, 2, 4] {
+            let mut elapsed_ms = Vec::with_capacity(samples);
+            for _ in 0..samples {
+                let started = Instant::now();
+                let mut checksum = 0.0_f64;
+                for files in files.chunks(VISION_BATCH_SIZE) {
+                    for image in
+                        prepare_images_with_workers(&root, files, false, worker_count).unwrap()
+                    {
+                        checksum += f64::from(image.unwrap().values[0]);
+                    }
+                }
+                elapsed_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
+                if let Some(expected) = expected_checksum {
+                    assert_eq!(checksum, expected);
+                } else {
+                    expected_checksum = Some(checksum);
+                }
+            }
+            elapsed_ms.sort_by(f64::total_cmp);
+            let p95_index = ((samples as f64 * 0.95).ceil() as usize)
+                .saturating_sub(1)
+                .min(samples - 1);
+            let median_ms = elapsed_ms[samples / 2];
+            reports.push(serde_json::json!({
+                "corpus_size": files.len(),
+                "workers": worker_count,
+                "samples": samples,
+                "median_ms": median_ms,
+                "p95_ms": elapsed_ms[p95_index],
+                "median_images_per_second": files.len() as f64 * 1_000.0 / median_ms,
+            }));
+        }
+
+        println!("{}", serde_json::to_string(&reports).unwrap());
     }
 }

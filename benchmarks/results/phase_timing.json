@@ -1,0 +1,479 @@
+{
+  "schema_version": 1,
+  "workflow_run": 33382447637,
+  "measured_commit": "0efc7e458500bcddece17662ef67414cd48d924d",
+  "process_state": "process-cold for every recorded invocation",
+  "filesystem_cache_state": "warm/uncontrolled; GitHub-hosted runners do not expose safe cache eviction",
+  "model_state": "installed except the explicitly separate network scenario",
+  "environment": {
+    "architecture": "x86_64",
+    "build_profile": "release",
+    "commit": "0efc7e458500bcddece17662ef67414cd48d924d",
+    "corpus_size": 502,
+    "execution_provider": "cpu",
+    "index_cache_state": "changed",
+    "logical_cpu_count": 4,
+    "model": {
+      "contract": "openclip-vit-b-32-256-datacomp-s34b-b86k-v1",
+      "text_revision": "17b9d07433aad73f70d338d8a1c7a4cef83887e0",
+      "text_sha256": "ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc",
+      "tokenizer_revision": "4afec35ffe57a943d569ff7ee888061830164da8",
+      "tokenizer_sha256": "72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85",
+      "vision_revision": "17b9d07433aad73f70d338d8a1c7a4cef83887e0",
+      "vision_sha256": "3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c"
+    },
+    "onnx_runtime_version": "1.24.2",
+    "os": "linux",
+    "query_cache_state": "miss",
+    "total_memory_bytes": 16766414848
+  },
+  "scenarios": {
+    "models_and_index_absent_network_variable": {
+      "network_time_is_variable": true,
+      "phases": {
+        "artifact_download": {
+          "median_ms": 38455.477605,
+          "p95_ms": null
+        },
+        "artifact_validation": {
+          "median_ms": 0.00728,
+          "p95_ms": null
+        },
+        "cached_vector_loading_deserialization": {
+          "median_ms": 1.109302,
+          "p95_ms": null
+        },
+        "changed_missing_image_detection": {
+          "median_ms": 0.083315,
+          "p95_ms": null
+        },
+        "database_writes": {
+          "median_ms": 9.777958,
+          "p95_ms": null
+        },
+        "image_decoding": {
+          "median_ms": 1462.739377,
+          "p95_ms": null
+        },
+        "image_preprocessing": {
+          "median_ms": 8300.812188,
+          "p95_ms": null
+        },
+        "index_open_schema_initialization": {
+          "median_ms": 1.7492860000000001,
+          "p95_ms": null
+        },
+        "model_session_construction": {
+          "median_ms": 843.3591809999999,
+          "p95_ms": null
+        },
+        "output_serialization": {
+          "median_ms": 0.134082,
+          "p95_ms": null
+        },
+        "path_validation_canonicalization": {
+          "median_ms": 0.018137,
+          "p95_ms": null
+        },
+        "recursive_discovery_metadata": {
+          "median_ms": 2.229981,
+          "p95_ms": null
+        },
+        "similarity_scoring": {
+          "median_ms": 0.328343,
+          "p95_ms": null
+        },
+        "stale_entry_reconciliation": {
+          "median_ms": 0.010015,
+          "p95_ms": null
+        },
+        "text_inference": {
+          "median_ms": 44.012446,
+          "p95_ms": null
+        },
+        "text_tokenization": {
+          "median_ms": 0.521776,
+          "p95_ms": null
+        },
+        "top_k_selection": {
+          "median_ms": 0.025136000000000002,
+          "p95_ms": null
+        },
+        "vision_inference": {
+          "median_ms": 36253.280861,
+          "p95_ms": null
+        }
+      },
+      "samples": 1,
+      "total_wall_median_ms": 78488.10163599999,
+      "total_wall_p95_ms": null
+    },
+    "models_installed_index_absent": {
+      "phases": {
+        "cached_vector_loading_deserialization": {
+          "median_ms": 1.102131,
+          "p95_ms": 1.1876390000000001
+        },
+        "changed_missing_image_detection": {
+          "median_ms": 0.06614900000000001,
+          "p95_ms": 0.073311
+        },
+        "database_writes": {
+          "median_ms": 10.011204,
+          "p95_ms": 11.188160000000002
+        },
+        "image_decoding": {
+          "median_ms": 1489.863038,
+          "p95_ms": 1538.811082
+        },
+        "image_preprocessing": {
+          "median_ms": 8348.353416,
+          "p95_ms": 8449.099642000001
+        },
+        "index_open_schema_initialization": {
+          "median_ms": 1.598453,
+          "p95_ms": 1.769827
+        },
+        "model_session_construction": {
+          "median_ms": 822.66378,
+          "p95_ms": 848.887312
+        },
+        "output_serialization": {
+          "median_ms": 0.10082200000000001,
+          "p95_ms": 0.152781
+        },
+        "path_validation_canonicalization": {
+          "median_ms": 0.017807,
+          "p95_ms": 0.02025
+        },
+        "recursive_discovery_metadata": {
+          "median_ms": 2.170671,
+          "p95_ms": 2.239735
+        },
+        "similarity_scoring": {
+          "median_ms": 0.31503800000000004,
+          "p95_ms": 0.34022199999999997
+        },
+        "stale_entry_reconciliation": {
+          "median_ms": 0.010034999999999999,
+          "p95_ms": 0.010596
+        },
+        "text_inference": {
+          "median_ms": 43.753315,
+          "p95_ms": 44.324631000000004
+        },
+        "text_tokenization": {
+          "median_ms": 0.528536,
+          "p95_ms": 0.579233
+        },
+        "top_k_selection": {
+          "median_ms": 0.024531,
+          "p95_ms": 0.028221999999999997
+        },
+        "vision_inference": {
+          "median_ms": 36225.187359,
+          "p95_ms": 36331.841230000005
+        }
+      },
+      "samples": 21,
+      "total_wall_median_ms": 40024.114064,
+      "total_wall_p95_ms": 40152.280568
+    },
+    "no_cache": {
+      "phases": {
+        "image_decoding": {
+          "median_ms": 1487.398205,
+          "p95_ms": 1532.2063400000002
+        },
+        "image_preprocessing": {
+          "median_ms": 8478.970161,
+          "p95_ms": 8641.295810000001
+        },
+        "model_session_construction": {
+          "median_ms": 875.7506229999999,
+          "p95_ms": 886.367702
+        },
+        "output_serialization": {
+          "median_ms": 0.11514300000000001,
+          "p95_ms": 0.16400700000000001
+        },
+        "path_validation_canonicalization": {
+          "median_ms": 0.017836,
+          "p95_ms": 0.033170000000000005
+        },
+        "recursive_discovery_metadata": {
+          "median_ms": 2.195328,
+          "p95_ms": 2.2411369999999997
+        },
+        "similarity_scoring": {
+          "median_ms": 0.314905,
+          "p95_ms": 0.326228
+        },
+        "text_inference": {
+          "median_ms": 44.065174,
+          "p95_ms": 44.358760999999994
+        },
+        "text_tokenization": {
+          "median_ms": 0.451491,
+          "p95_ms": 0.47151099999999996
+        },
+        "top_k_selection": {
+          "median_ms": 0.035016,
+          "p95_ms": 0.048519
+        },
+        "vision_inference": {
+          "median_ms": 36234.991452,
+          "p95_ms": 36287.016809999994
+        }
+      },
+      "samples": 21,
+      "total_wall_median_ms": 40082.964820999994,
+      "total_wall_p95_ms": 40163.598698
+    },
+    "one_percent_changed": {
+      "changed_images_per_sample": 5,
+      "phases": {
+        "cached_vector_loading_deserialization": {
+          "median_ms": 1.913434,
+          "p95_ms": 1.994488
+        },
+        "changed_missing_image_detection": {
+          "median_ms": 2.33528,
+          "p95_ms": 2.4721859999999998
+        },
+        "database_writes": {
+          "median_ms": 3.7679050000000003,
+          "p95_ms": 19.762235999999998
+        },
+        "image_decoding": {
+          "median_ms": 10.718865,
+          "p95_ms": 12.116274
+        },
+        "image_preprocessing": {
+          "median_ms": 47.708514,
+          "p95_ms": 49.443369000000004
+        },
+        "index_open_schema_initialization": {
+          "median_ms": 0.383218,
+          "p95_ms": 0.441055
+        },
+        "model_session_construction": {
+          "median_ms": 840.01258,
+          "p95_ms": 871.988923
+        },
+        "output_serialization": {
+          "median_ms": 0.137737,
+          "p95_ms": 0.17502399999999999
+        },
+        "path_validation_canonicalization": {
+          "median_ms": 0.017897000000000003,
+          "p95_ms": 0.018728
+        },
+        "recursive_discovery_metadata": {
+          "median_ms": 2.179956,
+          "p95_ms": 2.2361999999999997
+        },
+        "similarity_scoring": {
+          "median_ms": 0.33302499999999996,
+          "p95_ms": 0.354506
+        },
+        "stale_entry_reconciliation": {
+          "median_ms": 0.016595,
+          "p95_ms": 0.020461
+        },
+        "text_inference": {
+          "median_ms": 44.239384,
+          "p95_ms": 46.648281
+        },
+        "text_tokenization": {
+          "median_ms": 0.561897,
+          "p95_ms": 0.585302
+        },
+        "top_k_selection": {
+          "median_ms": 0.026797,
+          "p95_ms": 0.029369
+        },
+        "vision_inference": {
+          "median_ms": 367.081192,
+          "p95_ms": 372.553751
+        }
+      },
+      "samples": 21,
+      "total_wall_median_ms": 1307.358309,
+      "total_wall_p95_ms": 1344.254143
+    },
+    "read_only_out_of_tree_index": {
+      "phases": {
+        "cached_vector_loading_deserialization": {
+          "median_ms": 1.1485720000000001,
+          "p95_ms": 1.331467
+        },
+        "changed_missing_image_detection": {
+          "median_ms": 0.069745,
+          "p95_ms": 0.07224900000000001
+        },
+        "database_writes": {
+          "median_ms": 10.141156,
+          "p95_ms": 12.037554
+        },
+        "image_decoding": {
+          "median_ms": 1503.424234,
+          "p95_ms": 1561.0111749999999
+        },
+        "image_preprocessing": {
+          "median_ms": 8412.393081999999,
+          "p95_ms": 8568.503246
+        },
+        "index_open_schema_initialization": {
+          "median_ms": 1.5683889999999998,
+          "p95_ms": 1.786002
+        },
+        "model_session_construction": {
+          "median_ms": 831.555583,
+          "p95_ms": 852.826272
+        },
+        "output_serialization": {
+          "median_ms": 0.115144,
+          "p95_ms": 0.16270600000000002
+        },
+        "path_validation_canonicalization": {
+          "median_ms": 0.017887,
+          "p95_ms": 0.019098
+        },
+        "recursive_discovery_metadata": {
+          "median_ms": 2.180556,
+          "p95_ms": 2.205995
+        },
+        "similarity_scoring": {
+          "median_ms": 0.325697,
+          "p95_ms": 0.340464
+        },
+        "stale_entry_reconciliation": {
+          "median_ms": 0.010295,
+          "p95_ms": 0.010665999999999998
+        },
+        "text_inference": {
+          "median_ms": 43.989329,
+          "p95_ms": 47.531021
+        },
+        "text_tokenization": {
+          "median_ms": 0.547686,
+          "p95_ms": 0.573835
+        },
+        "top_k_selection": {
+          "median_ms": 0.025332999999999998,
+          "p95_ms": 0.028189000000000002
+        },
+        "vision_inference": {
+          "median_ms": 36235.109328,
+          "p95_ms": 36364.738142
+        }
+      },
+      "samples": 21,
+      "total_wall_median_ms": 40055.329951,
+      "total_wall_p95_ms": 40205.622173
+    },
+    "unchanged_exact_cached_query": {
+      "phases": {
+        "cached_vector_loading_deserialization": {
+          "median_ms": 2.165514,
+          "p95_ms": 2.2461960000000003
+        },
+        "changed_missing_image_detection": {
+          "median_ms": 2.328339,
+          "p95_ms": 2.3792459999999997
+        },
+        "index_open_schema_initialization": {
+          "median_ms": 0.327373,
+          "p95_ms": 0.351029
+        },
+        "output_serialization": {
+          "median_ms": 0.021282,
+          "p95_ms": 0.026119
+        },
+        "path_validation_canonicalization": {
+          "median_ms": 0.015984,
+          "p95_ms": 0.017647
+        },
+        "recursive_discovery_metadata": {
+          "median_ms": 2.148879,
+          "p95_ms": 2.1832610000000003
+        },
+        "similarity_scoring": {
+          "median_ms": 0.28303999999999996,
+          "p95_ms": 0.294612
+        },
+        "stale_entry_reconciliation": {
+          "median_ms": 0.015954,
+          "p95_ms": 0.017597
+        },
+        "top_k_selection": {
+          "median_ms": 0.021033999999999997,
+          "p95_ms": 0.021418
+        }
+      },
+      "samples": 21,
+      "total_wall_median_ms": 7.618022000000001,
+      "total_wall_p95_ms": 7.698103000000001
+    },
+    "unchanged_novel_query": {
+      "phases": {
+        "cached_vector_loading_deserialization": {
+          "median_ms": 2.130021,
+          "p95_ms": 2.219445
+        },
+        "changed_missing_image_detection": {
+          "median_ms": 2.38832,
+          "p95_ms": 2.439848
+        },
+        "database_writes": {
+          "median_ms": 1.3508769999999999,
+          "p95_ms": 3.133543
+        },
+        "index_open_schema_initialization": {
+          "median_ms": 0.376086,
+          "p95_ms": 0.407615
+        },
+        "model_session_construction": {
+          "median_ms": 474.42174,
+          "p95_ms": 490.30292
+        },
+        "output_serialization": {
+          "median_ms": 0.26662199999999997,
+          "p95_ms": 0.359963
+        },
+        "path_validation_canonicalization": {
+          "median_ms": 0.017716000000000003,
+          "p95_ms": 0.041422
+        },
+        "recursive_discovery_metadata": {
+          "median_ms": 2.193827,
+          "p95_ms": 2.239725
+        },
+        "similarity_scoring": {
+          "median_ms": 0.28794200000000003,
+          "p95_ms": 0.300819
+        },
+        "stale_entry_reconciliation": {
+          "median_ms": 0.016905000000000003,
+          "p95_ms": 0.02
+        },
+        "text_inference": {
+          "median_ms": 44.304037,
+          "p95_ms": 45.146097000000005
+        },
+        "text_tokenization": {
+          "median_ms": 0.64359,
+          "p95_ms": 0.692854
+        },
+        "top_k_selection": {
+          "median_ms": 0.023939,
+          "p95_ms": 0.024428000000000002
+        }
+      },
+      "samples": 21,
+      "total_wall_median_ms": 545.586488,
+      "total_wall_p95_ms": 561.016682
+    }
+  }
+}

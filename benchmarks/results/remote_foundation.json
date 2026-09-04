@@ -1,0 +1,276 @@
+{
+  "schema_version": 2,
+  "status": "complete: model, retrieval, implementation, phase timing, and Apple Silicon evidence recorded",
+  "environments": {
+    "retrieval_linux": {
+      "os": "Linux 6.17.0-1022-azure",
+      "architecture": "x86_64",
+      "logical_cpu_count": 4,
+      "total_memory_bytes": 16766414848,
+      "visiongrep_onnx_runtime": "1.24.2",
+      "rclip_python_onnx_runtime": "1.28.0",
+      "execution_provider": "CPUExecutionProvider",
+      "rust": "1.89.0",
+      "python": "3.12.14",
+      "pillow": "12.3.0",
+      "numpy": "2.1.3",
+      "build_profile": "release"
+    },
+    "implementation_microbench_linux": {
+      "os": "Linux 6.18.35",
+      "architecture": "x86_64",
+      "logical_cpu_count": 9,
+      "total_memory_bytes": 23109910528,
+      "onnx_runtime": "1.24.2",
+      "execution_provider": "CPUExecutionProvider",
+      "rust": "1.89.0",
+      "build_profile": "release"
+    },
+    "coreml_macos": {
+      "os": "macOS 15 arm64",
+      "hardware": "Apple M1 (Virtual)",
+      "logical_cpu_count": 3,
+      "total_memory": "7 GB",
+      "runner": "macos-15-arm64"
+    }
+  },
+  "commits": {
+    "visiongrep_baseline": "09564b0f03764f4d51852f9c698a78395b0d0bc8",
+    "datacomp_candidate_local": "3ebe145468e07e649336022dcdbde295b97e6d1a",
+    "datacomp_candidate_github": "e7d11874e7582b44274af8e48fc080b2475bc371",
+    "rclip": "3dcec2de5e23311473f6fb6433e602aa4f4ca812"
+  },
+  "workflow_runs": {
+    "model_contract": 33380886362,
+    "heavy_retrieval_and_phase_timing": 33382447637,
+    "coreml_apple_silicon": 33380886290,
+    "standard_ci_linux_and_macos": 33384554043
+  },
+  "model_contract_parity": {
+    "reference": "open_clip_torch 3.3.0 CPU with source model revision 4afec35ffe57a943d569ff7ee888061830164da8",
+    "workflow_run": 33380886362,
+    "golden_text_cases": 4,
+    "golden_image_cases": 3,
+    "token_ids_exact": true,
+    "preprocessing_bytes_exact_against_pillow_12_3": true,
+    "text_maximum_absolute_error": 2.3841858e-7,
+    "text_minimum_cosine": 0.9999998808,
+    "image_maximum_absolute_error": 5.6624413e-7,
+    "image_minimum_cosine": 0.9999999404,
+    "score_maximum_absolute_error": 3.054738e-7,
+    "rankings_exact": true,
+    "threshold_decisions_exact": true,
+    "tolerance": {
+      "maximum_absolute_error": 0.0001,
+      "minimum_cosine": 0.99999
+    }
+  },
+  "retrieval_quality": {
+    "corpus": {
+      "dataset": "COCO Caption 2017 validation",
+      "dataset_revision": "3bdd5827e243cc3084ac69a1111e69c3ab9193ff",
+      "coco_images": 500,
+      "generated_cc0_screenshots": 2,
+      "positive_queries": 114,
+      "absent_queries": 10,
+      "corpus_specific": true,
+      "note": "Precision is conservative because unjudged COCO images may also be semantically relevant."
+    },
+    "visiongrep_baseline": {
+      "recall_at_1": 0.49122807017543857,
+      "recall_at_5": 0.7105263157894737,
+      "recall_at_10": 0.8421052631578947,
+      "mrr_at_10": 0.595749791144528,
+      "ndcg_at_10": 0.6544746094023525,
+      "precision_at_1": 0.49122807017543857,
+      "precision_at_5": 0.14210526315789473,
+      "precision_at_10": 0.08421052631578949,
+      "no_match_false_positive_rate_at_0_25": 0.5,
+      "no_match_false_negative_rate_at_0_25": 0.18421052631578946
+    },
+    "rclip_3_3_0": {
+      "recall_at_1": 0.5789473684210527,
+      "recall_at_5": 0.8596491228070176,
+      "recall_at_10": 0.8947368421052632,
+      "mrr_at_10": 0.6830026455026456,
+      "ndcg_at_10": 0.7345486392698011,
+      "precision_at_1": 0.5789473684210527,
+      "precision_at_5": 0.17192982456140352,
+      "precision_at_10": 0.08947368421052633,
+      "no_match_false_positive_rate_at_0_25": 0.3,
+      "no_match_false_negative_rate_at_0_25": 0.17543859649122806
+    },
+    "visiongrep_datacomp": {
+      "recall_at_1": 0.5789473684210527,
+      "recall_at_5": 0.8596491228070176,
+      "recall_at_10": 0.8947368421052632,
+      "mrr_at_10": 0.683806739069897,
+      "ndcg_at_10": 0.7352904468238461,
+      "precision_at_1": 0.5789473684210527,
+      "precision_at_5": 0.17192982456140352,
+      "precision_at_10": 0.08947368421052633,
+      "no_match_false_positive_rate_at_0_25": 0.3,
+      "no_match_false_negative_rate_at_0_25": 0.17543859649122806,
+      "coverage_precision": [
+        {"threshold": 0.15, "coverage": 1.0, "top1_precision_when_covered": 0.5789473684210527, "absent_false_positive_rate": 1.0},
+        {"threshold": 0.2, "coverage": 1.0, "top1_precision_when_covered": 0.5789473684210527, "absent_false_positive_rate": 0.7},
+        {"threshold": 0.25, "coverage": 0.9736842105263158, "top1_precision_when_covered": 0.5945945945945946, "absent_false_positive_rate": 0.3},
+        {"threshold": 0.3, "coverage": 0.6666666666666666, "top1_precision_when_covered": 0.6447368421052632, "absent_false_positive_rate": 0.1},
+        {"threshold": 0.35, "coverage": 0.13157894736842105, "top1_precision_when_covered": 0.9333333333333333, "absent_false_positive_rate": 0.0}
+      ]
+    },
+    "rclip_datacomp_behavior": {
+      "queries": 124,
+      "top_k_paths_and_order_exact_rate": 0.3951612903225806,
+      "top_k_membership_exact_rate": 0.9112903225806451,
+      "top_one_path_exact_rate": 0.9838709677419355,
+      "threshold_accepted_paths_exact_rate": 0.9193548387096774,
+      "no_match_decisions_exact_rate": 0.9919354838709677,
+      "maximum_score_difference_on_shared_paths": 0.0051933,
+      "explanation": "Pinned golden PNG parity is exact within tolerance; COCO JPEG differences arise from Pillow/libjpeg versus Rust image decoding. Aggregate retrieval and no-match metrics remain identical."
+    },
+    "threshold_decision": "Retain 0.25 as explicitly provisional; ten absent queries are insufficient for responsible recalibration."
+  },
+  "retrieval_performance": {
+    "visiongrep_baseline": {
+      "first_index_and_query_ms": 35555.172072999994,
+      "end_to_end_first_index_images_per_second": 14.118902278670463,
+      "novel_query_median_ms": 776.6436949999616,
+      "novel_query_p95_ms": 796.8425310000384,
+      "cached_query_ms": 16.428048999955536,
+      "peak_rss_kib": 507132,
+      "index_size_bytes": 2605056
+    },
+    "rclip_3_3_0": {
+      "first_index_and_query_ms": 40250.8153,
+      "end_to_end_first_index_images_per_second": 12.47179706195914,
+      "novel_query_median_ms": 50.62258249995466,
+      "novel_query_p95_ms": 54.26908899994487,
+      "cached_query_ms": 50.64498100000492,
+      "peak_rss_kib": 965892,
+      "index_size_bytes": 2195456,
+      "latency_note": "Novel queries are session-warm in one Python process and are not directly comparable with process-cold VisionGrep CLI invocations."
+    },
+    "visiongrep_datacomp": {
+      "first_index_and_query_ms": 40057.87050799995,
+      "end_to_end_first_index_images_per_second": 12.531869358850358,
+      "novel_query_median_ms": 567.110090500023,
+      "novel_query_p95_ms": 583.0816939999295,
+      "cached_query_ms": 11.22043499992742,
+      "peak_rss_kib": 659172,
+      "index_size_bytes": 2613248
+    }
+  },
+  "phase_timing": {
+    "summary_file": "phase_timing.json",
+    "workflow_run": 33382447637,
+    "measured_commit": "0efc7e458500bcddece17662ef67414cd48d924d",
+    "process_state": "process-cold for every recorded invocation",
+    "filesystem_cache_state": "warm/uncontrolled; GitHub-hosted runners do not expose safe cache eviction",
+    "regular_samples_per_scenario": 21,
+    "scenarios": {
+      "models_installed_index_absent": {"total_wall_median_ms": 40024.114064, "total_wall_p95_ms": 40152.280568},
+      "no_cache": {"total_wall_median_ms": 40082.964821, "total_wall_p95_ms": 40163.598698},
+      "unchanged_novel_query": {"total_wall_median_ms": 545.586488, "total_wall_p95_ms": 561.016682},
+      "unchanged_exact_cached_query": {"total_wall_median_ms": 7.618022, "total_wall_p95_ms": 7.698103},
+      "one_percent_changed": {"changed_images": 5, "total_wall_median_ms": 1307.358309, "total_wall_p95_ms": 1344.254143},
+      "read_only_out_of_tree_index": {"total_wall_median_ms": 40055.329951, "total_wall_p95_ms": 40205.622173},
+      "models_and_index_absent_network_variable": {"samples": 1, "total_wall_ms": 78488.101636, "artifact_download_ms": 38455.477605}
+    }
+  },
+  "bulk_reconciliation": {
+    "samples_per_case": 21,
+    "comparison": "prior one-SQL-query-per-discovered-path lookup versus one ordered metadata load and merge walk",
+    "cases": [
+      {"corpus_size": 10000, "scenario": "unchanged", "per_file_query_median_ms": 6.340024, "per_file_query_p95_ms": 7.686195, "bulk_median_ms": 2.493898, "bulk_p95_ms": 4.305397, "speedup": 2.5422},
+      {"corpus_size": 10000, "scenario": "one_percent_changed", "per_file_query_median_ms": 6.087541, "per_file_query_p95_ms": 7.302859, "bulk_median_ms": 2.339439, "bulk_p95_ms": 2.595517, "speedup": 2.6021},
+      {"corpus_size": 100000, "scenario": "unchanged", "per_file_query_median_ms": 90.734199, "per_file_query_p95_ms": 114.642482, "bulk_median_ms": 42.753816, "bulk_p95_ms": 45.690378, "speedup": 2.1222},
+      {"corpus_size": 100000, "scenario": "one_percent_changed", "per_file_query_median_ms": 93.499309, "per_file_query_p95_ms": 105.181927, "bulk_median_ms": 43.1889, "bulk_p95_ms": 46.850723, "speedup": 2.1649}
+    ]
+  },
+  "artifact_verification_fast_path": {
+    "samples_per_case": 7,
+    "scenario": "process-cold novel text query over a 218-image cached index; text model and tokenizer required",
+    "verified_manifest": {
+      "artifact_validation_median_ms": 0.107639,
+      "total_wall_median_ms": 623.782237
+    },
+    "explicit_full_sha256": {
+      "artifact_validation_median_ms": 170.002472,
+      "total_wall_median_ms": 806.690824
+    },
+    "artifact_validation_wall_reduction_fraction": 0.999366838618676,
+    "end_to_end_wall_reduction_fraction": 0.22673939204247107
+  },
+  "coreml_experiment": {
+    "workflow_run": 33380886290,
+    "corpus_size": 502,
+    "samples": 5,
+    "correctness": {
+      "maximum_absolute_error": 7.37607479095459e-7,
+      "minimum_cosine": 0.9999999403953552,
+      "top_k_paths_and_order_exact": true,
+      "threshold_decisions_exact": true,
+      "deterministic_repeats_exact": true
+    },
+    "cpu_onnx": {
+      "first_index_and_query_median_ms": 32073.970499999974,
+      "indexing_throughput_median_images_per_second": 15.651320749328507,
+      "peak_rss_median_kib": 1063168,
+      "index_size_median_bytes": 2187264
+    },
+    "coreml": {
+      "first_index_and_query_median_ms": 74686.74866700008,
+      "indexing_throughput_median_images_per_second": 6.721406527391196,
+      "peak_rss_median_kib": 697808,
+      "index_size_median_bytes": 2187264
+    },
+    "throughput_gain_fraction": -0.5705533970556724,
+    "first_index_wall_reduction_fraction": -1.3285782054017958,
+    "production_decision": "defer: correctness passed but both end-to-end performance gates failed; no production Core ML code or dependency retained"
+  },
+  "bounded_pipeline": {
+    "model_contract": "qdrant-clip-vit-b-32-224-v1",
+    "corpus_size": 256,
+    "samples": 7,
+    "serial_total_wall_median_ms": 14360.026851,
+    "serial_total_wall_p95_ms": 15071.649775,
+    "batched_total_wall_median_ms": 10533.963071,
+    "batched_total_wall_p95_ms": 10743.343409,
+    "median_wall_reduction_fraction": 0.2664398749673311,
+    "serial_vision_inference_median_ms": 11948.123616,
+    "batched_vision_inference_median_ms": 8943.134347000001,
+    "output_sha256_exact": "508508142b0b39a847c89a9ab911e5c835758956a1ee5dd82b412f25d20ff6ef"
+  },
+  "preprocessing_workers": [
+    {"workers": 1, "median_ms": 1322.074, "p95_ms": 1390.349, "images_per_second": 193.635},
+    {"workers": 2, "median_ms": 767.648, "p95_ms": 819.873, "images_per_second": 333.486},
+    {"workers": 4, "median_ms": 501.513, "p95_ms": 573.856, "images_per_second": 510.455}
+  ],
+  "datacomp_batch_matrix": [
+    {"batch_size": 1, "samples": 21, "median_ms": 49.18986, "p95_ms": 67.499549, "median_images_per_second": 20.329393090364558},
+    {"batch_size": 2, "samples": 21, "median_ms": 96.186335, "p95_ms": 129.747096, "median_images_per_second": 20.792974386642342},
+    {"batch_size": 4, "samples": 21, "median_ms": 191.11363, "p95_ms": 234.88179200000002, "median_images_per_second": 20.929956696442844},
+    {"batch_size": 8, "samples": 21, "median_ms": 369.705405, "p95_ms": 399.578192, "median_images_per_second": 21.638850532899298},
+    {"batch_size": 16, "samples": 21, "median_ms": 681.945146, "p95_ms": 1022.379678, "median_images_per_second": 23.462297655242786}
+  ],
+  "batch_decision": "Keep batch 8: batch 16 improved median throughput by only 8.4% while its p95 batch latency was 2.6x and memory doubled.",
+  "ranking_selection": {
+    "samples_per_case": 21,
+    "correctness": "exact score-descending/path-ascending equivalence",
+    "cases": [
+      {"corpus_size": 10000, "threshold": 0.25, "top": 5, "full_sort_median_ms": 4.415199, "heap_median_ms": 4.104509, "speedup": 1.075695},
+      {"corpus_size": 10000, "threshold": 0.25, "top": 10, "full_sort_median_ms": 4.340939, "heap_median_ms": 4.090899, "speedup": 1.061121},
+      {"corpus_size": 10000, "threshold": 0.25, "top": 100, "full_sort_median_ms": 4.484151, "heap_median_ms": 4.202103, "speedup": 1.067121},
+      {"corpus_size": 10000, "threshold": -1.0, "top": 5, "full_sort_median_ms": 5.120471, "heap_median_ms": 4.144769, "speedup": 1.235406},
+      {"corpus_size": 10000, "threshold": -1.0, "top": 10, "full_sort_median_ms": 4.925033, "heap_median_ms": 4.192579, "speedup": 1.174702},
+      {"corpus_size": 10000, "threshold": -1.0, "top": 100, "full_sort_median_ms": 4.894557, "heap_median_ms": 4.251897, "speedup": 1.151147},
+      {"corpus_size": 100000, "threshold": 0.25, "top": 5, "full_sort_median_ms": 47.092786, "heap_median_ms": 40.591924, "speedup": 1.160152},
+      {"corpus_size": 100000, "threshold": 0.25, "top": 10, "full_sort_median_ms": 47.482304, "heap_median_ms": 40.611173, "speedup": 1.169193},
+      {"corpus_size": 100000, "threshold": 0.25, "top": 100, "full_sort_median_ms": 47.785592, "heap_median_ms": 40.998647, "speedup": 1.165541},
+      {"corpus_size": 100000, "threshold": -1.0, "top": 5, "full_sort_median_ms": 60.695232, "heap_median_ms": 41.199222, "speedup": 1.473213},
+      {"corpus_size": 100000, "threshold": -1.0, "top": 10, "full_sort_median_ms": 59.145511, "heap_median_ms": 41.664188, "speedup": 1.419577},
+      {"corpus_size": 100000, "threshold": -1.0, "top": 100, "full_sort_median_ms": 59.583195, "heap_median_ms": 41.988527, "speedup": 1.419035}
+    ]
+  }
+}

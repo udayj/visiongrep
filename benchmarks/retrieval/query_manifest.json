@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "corpus": {
+    "dataset": "lmms-lab-encoder/COCO-Caption2017",
+    "dataset_revision": "3bdd5827e243cc3084ac69a1111e69c3ab9193ff",
+    "split": "val",
+    "row_start": 0,
+    "row_count": 500
+  },
+  "generated_positive_queries": {
+    "id_prefix": "coco-caption",
+    "rows": {
+      "start": 0,
+      "count": 100
+    },
+    "caption_index": 0,
+    "relevance": "the image from the same pinned dataset row",
+    "tags": [
+      "coco-caption"
+    ]
+  },
+  "curated_positive_queries": [
+    {
+      "id": "curated-black-motorcycle-garage",
+      "query": "a black motorcycle parked in front of a garage",
+      "relevant": ["000000179765.jpg"],
+      "tags": ["attribute", "color", "object", "spatial"]
+    },
+    {
+      "id": "curated-cat-between-cars",
+      "query": "a gray and white cat standing between two parked cars",
+      "relevant": ["000000172330.jpg"],
+      "tags": ["attribute", "hard-negative", "object", "spatial"]
+    },
+    {
+      "id": "curated-horse-between-cars",
+      "query": "a brown horse standing between two parked cars",
+      "relevant": ["000000368335.jpg"],
+      "tags": ["attribute", "hard-negative", "object", "spatial"]
+    },
+    {
+      "id": "curated-gray-cat-black-car",
+      "query": "a gray cat standing on a black car",
+      "relevant": ["000000010363.jpg"],
+      "tags": ["attribute", "color", "hard-negative", "spatial"]
+    },
+    {
+      "id": "curated-calico-cat-black-car",
+      "query": "a calico cat resting on a black car",
+      "relevant": ["000000023272.jpg"],
+      "tags": ["attribute", "color", "hard-negative", "spatial"]
+    },
+    {
+      "id": "curated-blue-motorcycle-showroom",
+      "query": "a blue motorcycle displayed on a showroom floor",
+      "relevant": ["000000456394.jpg"],
+      "tags": ["attribute", "color", "hard-negative", "scene"]
+    },
+    {
+      "id": "curated-red-car-blue-motorcycles",
+      "query": "a red car beside blue motorcycles and a gas price sign",
+      "relevant": ["000000527220.jpg"],
+      "tags": ["attribute", "color", "hard-negative", "spatial", "text-heavy"]
+    },
+    {
+      "id": "curated-three-computers",
+      "query": "three computers without screens sitting on a desk",
+      "relevant": ["000000570782.jpg"],
+      "tags": ["count", "hard-negative", "object"]
+    },
+    {
+      "id": "curated-two-computers",
+      "query": "two computers sitting on a white desk",
+      "relevant": ["000000063740.jpg"],
+      "tags": ["count", "hard-negative", "object"]
+    },
+    {
+      "id": "curated-dog-above-pool",
+      "query": "a dog jumping through the air above a pool",
+      "relevant": ["000000067213.jpg"],
+      "tags": ["activity", "object", "spatial"]
+    },
+    {
+      "id": "curated-skateboard-cake",
+      "query": "a boy cutting a cake shaped like a skateboard",
+      "relevant": ["000000025096.jpg"],
+      "tags": ["activity", "hard-negative", "object"]
+    },
+    {
+      "id": "curated-night-street",
+      "query": "an empty city street at night under bright streetlights",
+      "relevant": ["000000423798.jpg"],
+      "tags": ["attribute", "scene"]
+    },
+    {
+      "id": "curated-rust-editor-screenshot",
+      "query": "a dark text editor screenshot showing Rust source code",
+      "relevant": ["synthetic-rust-editor.png"],
+      "tags": ["screenshot", "text-heavy"]
+    },
+    {
+      "id": "curated-settings-dialog-screenshot",
+      "query": "a blue and white application settings dialog about privacy",
+      "relevant": ["synthetic-settings-dialog.png"],
+      "tags": ["attribute", "color", "screenshot", "text-heavy"]
+    }
+  ],
+  "absent_queries": [
+    {
+      "id": "absent-astronaut-satellite",
+      "query": "an astronaut repairing a satellite in outer space",
+      "tags": ["absent", "activity", "scene"]
+    },
+    {
+      "id": "absent-purple-submarine",
+      "query": "a purple submarine beneath polar ice",
+      "tags": ["absent", "attribute", "color", "object"]
+    },
+    {
+      "id": "absent-mars-microscope",
+      "query": "a microscope standing on the surface of Mars",
+      "tags": ["absent", "object", "scene"]
+    },
+    {
+      "id": "absent-dragon-library",
+      "query": "a green dragon reading a book in a library",
+      "tags": ["absent", "activity", "attribute", "color"]
+    },
+    {
+      "id": "absent-eight-violins",
+      "query": "exactly eight violins arranged in a circle",
+      "tags": ["absent", "count", "spatial"]
+    },
+    {
+      "id": "absent-robot-volcano",
+      "query": "a silver robot dancing inside a volcano",
+      "tags": ["absent", "activity", "attribute", "scene"]
+    },
+    {
+      "id": "absent-text-editor",
+      "query": "a screenshot of a text editor showing Rust source code",
+      "tags": ["absent", "screenshot", "text-heavy"]
+    },
+    {
+      "id": "absent-spreadsheet",
+      "query": "a spreadsheet screenshot with a quarterly budget chart",
+      "tags": ["absent", "screenshot", "text-heavy"]
+    },
+    {
+      "id": "absent-cat-above-plane",
+      "query": "a cat floating above an airplane",
+      "tags": ["absent", "object", "spatial"]
+    },
+    {
+      "id": "absent-blue-bananas",
+      "query": "a bowl filled with blue bananas",
+      "tags": ["absent", "attribute", "color", "hard-negative"]
+    }
+  ]
+}
