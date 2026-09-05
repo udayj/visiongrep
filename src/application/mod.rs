@@ -1,15 +1,16 @@
+mod query;
+
 use std::path::{Path, PathBuf};
 
-use crate::embedding::{NormalizedEmbedding, embed_prepared_image, embed_text, prepare_image};
+pub(crate) use query::Query;
+use query::{PreparedQuery, ResolvedQuery};
+
 use crate::error::VisionGrepError;
 use crate::index::{
-    ImageFile, ImageIndex, ImageRecord, IndexLocation, IngestEvent, SearchRoot, StagedImageIndex,
+    ImageFile, ImageIndex, IndexLocation, IngestEvent, SearchRoot, StagedImageIndex,
     discover_images, embed_images, ingest_into_index,
 };
-use crate::model::{
-    ArtifactEvent, ModelPaths, TextSession, VisionSession, embedding_contract,
-    ensure_text_artifacts, ensure_vision_artifacts, model_paths,
-};
+use crate::model::{ArtifactEvent, ArtifactVerification, Models, embedding_contract};
 use crate::ranking::{Ranker, SearchResult};
 use crate::timing::{CacheState, Phase, TimingRecorder};
 
@@ -18,45 +19,6 @@ pub(crate) enum CacheMode {
     Use,
     Reindex,
     Disabled,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ArtifactVerification {
-    Fast,
-    Full,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Query {
-    Text(String),
-    Image(PathBuf),
-}
-
-enum ResolvedQuery<'a> {
-    Text(&'a str),
-    Image(PathBuf),
-}
-
-impl Query {
-    fn resolve(&self) -> Result<ResolvedQuery<'_>, VisionGrepError> {
-        match self {
-            Self::Text(text) => Ok(ResolvedQuery::Text(text)),
-            Self::Image(path) => {
-                let open_error = |source| VisionGrepError::QueryImageOpen {
-                    path: path.clone(),
-                    source,
-                };
-                let canonical = path.canonicalize().map_err(open_error)?;
-                if !std::fs::metadata(&canonical).map_err(open_error)?.is_file() {
-                    return Err(VisionGrepError::QueryImageNotFile { path: path.clone() });
-                }
-                // A cache hit must still reject an inaccessible query. Check the file type first
-                // so opening a pipe or other special file cannot block waiting for a writer.
-                std::fs::File::open(&canonical).map_err(open_error)?;
-                Ok(ResolvedQuery::Image(canonical))
-            }
-        }
-    }
 }
 
 pub(crate) struct SearchRequest {
@@ -153,43 +115,29 @@ fn search_without_cache(
     on_event: &mut impl FnMut(SearchEvent),
     timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
-    let mut vision = None;
+    let mut models = Models::new(request.artifact_verification);
     let image_records = if files.is_empty() {
         Vec::new()
     } else {
-        let mut session = load_vision(request.artifact_verification, on_event, timing)?;
-        let records = embed_images(
+        let session = models.vision(&mut |event| on_event(SearchEvent::Artifact(event)), timing)?;
+        embed_images(
             root,
             files,
-            &mut session,
+            session,
             &mut |event| on_event(SearchEvent::Index(event)),
             timing,
-        )?;
-        if matches!(&query, ResolvedQuery::Image(_)) {
-            vision = Some(session);
-        }
-        records
+        )?
     };
 
-    match query {
-        ResolvedQuery::Text(query) => {
-            if image_records.is_empty() {
-                return Ok(Vec::new());
-            }
-            let embedding =
-                embed_text_query(query, request.artifact_verification, on_event, timing)?;
-            Ok(Ranker::new(&embedding, request.top, request.threshold).rank(image_records, timing))
-        }
-        ResolvedQuery::Image(path) => search_image_query(
-            root,
-            request,
-            &path,
-            image_records,
-            vision.as_mut(),
-            on_event,
-            timing,
-        ),
-    }
+    let prepared = query.prepare(
+        root,
+        image_records,
+        None,
+        &mut models,
+        &mut |event| on_event(SearchEvent::Artifact(event)),
+        timing,
+    )?;
+    Ok(rank_query(prepared, request, timing))
 }
 
 /// Reconciles the on-disk index and loads only the model sessions required by the current state.
@@ -212,24 +160,20 @@ fn search_with_cache(
     index.apply_reconciliation(&plan)?;
     timing.record(Phase::StaleEntryReconciliation, reconciliation_started);
     let missing = plan.missing();
-    let mut vision = None;
+    let mut models = Models::new(request.artifact_verification);
     if !missing.is_empty() {
         timing.set_index_cache_state(CacheState::Changed);
-        let mut session = load_vision(request.artifact_verification, on_event, timing)?;
+        let session = models.vision(&mut |event| on_event(SearchEvent::Artifact(event)), timing)?;
         ingest_into_index(
             root,
             &mut index,
             missing,
-            &mut session,
+            session,
             &mut |event| {
                 on_event(SearchEvent::Index(event));
             },
             timing,
         )?;
-        // An external image query can reuse this session after changed corpus images are indexed.
-        if matches!(&query, ResolvedQuery::Image(_)) {
-            vision = Some(session);
-        }
     }
 
     search_index(
@@ -237,7 +181,7 @@ fn search_with_cache(
         request,
         query,
         &mut index,
-        vision.as_mut(),
+        &mut models,
         on_event,
         timing,
     )
@@ -258,26 +202,19 @@ fn reindex_and_search(
     let index_started = timing.start();
     let active_index = ImageIndex::open(location, root.filesystem_path(), embedding_contract())?;
     timing.record(Phase::IndexOpenSchemaInitialization, index_started);
-    let mut vision = if files.is_empty() {
-        None
-    } else {
-        Some(load_vision(
-            request.artifact_verification,
-            on_event,
-            timing,
-        )?)
-    };
+    let mut models = Models::new(request.artifact_verification);
     let staged_started = timing.start();
     let mut staged =
         StagedImageIndex::create(location, root.filesystem_path(), embedding_contract())?;
     timing.record(Phase::IndexOpenSchemaInitialization, staged_started);
 
-    if let Some(vision) = &mut vision {
+    if !files.is_empty() {
+        let session = models.vision(&mut |event| on_event(SearchEvent::Artifact(event)), timing)?;
         ingest_into_index(
             root,
             staged.index_mut(),
             files,
-            vision,
+            session,
             &mut |event| {
                 on_event(SearchEvent::Index(event));
             },
@@ -292,7 +229,7 @@ fn reindex_and_search(
         request,
         query,
         staged.index_mut(),
-        vision.as_mut(),
+        &mut models,
         on_event,
         timing,
     )?;
@@ -306,163 +243,33 @@ fn search_index(
     request: &SearchRequest,
     query: ResolvedQuery<'_>,
     index: &mut ImageIndex,
-    vision: Option<&mut VisionSession>,
+    models: &mut Models,
     on_event: &mut impl FnMut(SearchEvent),
     timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
     let loading_started = timing.start();
     let image_records = index.all_embeddings(root.display_path())?;
     timing.record(Phase::CachedVectorLoadingDeserialization, loading_started);
-    let query = match query {
-        ResolvedQuery::Text(query) => query,
-        ResolvedQuery::Image(path) => {
-            return search_image_query(
-                root,
-                request,
-                &path,
-                image_records,
-                vision,
-                on_event,
-                timing,
-            );
-        }
-    };
-    if image_records.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let query_embedding = match index.query_embedding(query)? {
-        Some(embedding) => {
-            timing.set_query_cache_state(CacheState::Hit);
-            embedding
-        }
-        None => {
-            timing.set_query_cache_state(CacheState::Miss);
-            let embedding =
-                embed_text_query(query, request.artifact_verification, on_event, timing)?;
-            let writes_started = timing.start();
-            index.upsert_query_embedding(query, &embedding)?;
-            timing.record(Phase::DatabaseWrites, writes_started);
-            embedding
-        }
-    };
-
-    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records, timing))
+    let prepared = query.prepare(
+        root,
+        image_records,
+        Some(index),
+        models,
+        &mut |event| on_event(SearchEvent::Artifact(event)),
+        timing,
+    )?;
+    Ok(rank_query(prepared, request, timing))
 }
 
-fn search_image_query(
-    root: &SearchRoot,
+fn rank_query(
+    prepared: Option<PreparedQuery>,
     request: &SearchRequest,
-    path: &Path,
-    mut image_records: Vec<ImageRecord>,
-    vision: Option<&mut VisionSession>,
-    on_event: &mut impl FnMut(SearchEvent),
     timing: &mut TimingRecorder,
-) -> Result<Vec<SearchResult>, VisionGrepError> {
-    timing.set_query_cache_state(CacheState::NotApplicable);
-    let query_embedding = match take_query_image(root, path, &mut image_records) {
-        Some(embedding) => {
-            if request.cache_mode != CacheMode::Disabled {
-                timing.set_query_cache_state(CacheState::Hit);
-            }
-            embedding
-        }
-        None => {
-            // Validate even an empty search: a corrupt query is an error, not a successful miss.
-            let prepared = prepare_image(path, timing.is_enabled())?;
-            if image_records.is_empty() {
-                return Ok(Vec::new());
-            }
-            let mut loaded_session;
-            let session = match vision {
-                Some(session) => session,
-                None => {
-                    loaded_session = load_vision(request.artifact_verification, on_event, timing)?;
-                    &mut loaded_session
-                }
-            };
-            // External queries are transient; only discovered corpus images belong in the index.
-            embed_prepared_image(prepared, session, timing)?
-        }
+) -> Vec<SearchResult> {
+    let Some(prepared) = prepared else {
+        return Vec::new();
     };
-    Ok(Ranker::new(&query_embedding, request.top, request.threshold).rank(image_records, timing))
-}
-
-fn take_query_image(
-    root: &SearchRoot,
-    canonical_query_path: &Path,
-    image_records: &mut Vec<ImageRecord>,
-) -> Option<NormalizedEmbedding> {
-    // Discovery does not follow symlinks. Resolving the query once is enough to match a corpus
-    // path, including a query supplied through a symlink or a differently spelled search root.
-    let relative_path = canonical_query_path
-        .strip_prefix(root.filesystem_path())
-        .ok()?;
-    let display_path = root.display_image_path(relative_path);
-    let position = image_records
-        .iter()
-        .position(|image| image.path == display_path)?;
-    // Removing the query both transfers its embedding and excludes it before top-K selection.
-    Some(image_records.swap_remove(position).embedding)
-}
-
-fn load_vision(
-    verification: ArtifactVerification,
-    on_event: &mut impl FnMut(SearchEvent),
-    timing: &mut TimingRecorder,
-) -> Result<VisionSession, VisionGrepError> {
-    let paths = model_paths()?;
-    ensure_vision(&paths, verification, on_event, timing)?;
-    let started = timing.start();
-    let session = VisionSession::load(&paths)?;
-    timing.record(Phase::ModelSessionConstruction, started);
-    Ok(session)
-}
-
-fn embed_text_query(
-    query: &str,
-    verification: ArtifactVerification,
-    on_event: &mut impl FnMut(SearchEvent),
-    timing: &mut TimingRecorder,
-) -> Result<NormalizedEmbedding, VisionGrepError> {
-    let paths = model_paths()?;
-    ensure_text(&paths, verification, on_event, timing)?;
-    let started = timing.start();
-    let mut session = TextSession::load(&paths)?;
-    timing.record(Phase::ModelSessionConstruction, started);
-    embed_text(query, &mut session, timing)
-}
-
-fn ensure_vision(
-    paths: &ModelPaths,
-    verification: ArtifactVerification,
-    on_event: &mut impl FnMut(SearchEvent),
-    timing: &mut TimingRecorder,
-) -> Result<(), VisionGrepError> {
-    ensure_vision_artifacts(
-        paths,
-        &mut |event| {
-            on_event(SearchEvent::Artifact(event));
-        },
-        timing,
-        verification,
-    )
-}
-
-fn ensure_text(
-    paths: &ModelPaths,
-    verification: ArtifactVerification,
-    on_event: &mut impl FnMut(SearchEvent),
-    timing: &mut TimingRecorder,
-) -> Result<(), VisionGrepError> {
-    ensure_text_artifacts(
-        paths,
-        &mut |event| {
-            on_event(SearchEvent::Artifact(event));
-        },
-        timing,
-        verification,
-    )
+    Ranker::new(&prepared.embedding, request.top, request.threshold).rank(prepared.images, timing)
 }
 
 fn validate_search_path(path: &Path) -> Result<(), VisionGrepError> {
@@ -492,6 +299,7 @@ mod tests {
     use rusqlite::{Connection, params};
 
     use super::*;
+    use crate::embedding::NormalizedEmbedding;
 
     fn write_image(path: &Path) {
         RgbImage::from_pixel(16, 16, Rgb([120, 30, 90]))
@@ -672,41 +480,6 @@ mod tests {
             }
         }
         assert_eq!(fs::read_dir(images.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn no_cache_reuses_an_in_memory_query_and_preserves_native_paths() {
-        use std::ffi::OsStr;
-
-        let directory = tempfile::tempdir().unwrap();
-        let root = SearchRoot::resolve(directory.path()).unwrap();
-        let query_name = Path::new(OsStr::from_bytes(b"query-\xff.png"));
-        let query = root.image_path(query_name);
-        let matching = root.display_image_path(Path::new("duplicate.png"));
-        let images = vec![
-            ImageRecord {
-                path: root.display_image_path(query_name),
-                embedding: embedding(),
-            },
-            ImageRecord {
-                path: matching.clone(),
-                embedding: embedding(),
-            },
-        ];
-        let request = image_request(directory.path(), &query, CacheMode::Disabled);
-        let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
-        let results = search_image_query(
-            &root,
-            &request,
-            &query,
-            images,
-            None,
-            &mut |_| panic!("query embedding is already available"),
-            &mut timing,
-        )
-        .unwrap();
-        assert_eq!(results[0].path, matching);
-        assert!(!directory.path().join(".visiongrep.db").exists());
     }
 
     #[test]

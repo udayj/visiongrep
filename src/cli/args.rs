@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use clap::{CommandFactory, Parser, error::ErrorKind};
 
 use super::terminal::OutputFormat;
-use crate::application::{ArtifactVerification, CacheMode, Query, SearchRequest};
+use crate::application::{CacheMode, Query, SearchRequest};
+use crate::model::ArtifactVerification;
 use crate::ranking::DEFAULT_SIMILARITY_THRESHOLD;
 use crate::timing::TimingDestination;
 

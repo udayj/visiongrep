@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-use crate::application::ArtifactVerification;
 use crate::embedding::EmbeddingContract;
 use crate::error::VisionGrepError;
 use crate::timing::{ModelMetadata, Phase, TimingRecorder};
@@ -34,6 +33,12 @@ const TOKENIZER_SHA256: &str = "72ed5c96db5729294468543e4bc75fce14ca63f58e373002
 const VISION_MODEL_SIZE: u64 = 351_826_068;
 const TEXT_MODEL_SIZE: u64 = 254_344_274;
 const TOKENIZER_SIZE: u64 = 2_224_081;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArtifactVerification {
+    Fast,
+    Full,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct ArtifactSpec {
