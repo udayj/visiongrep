@@ -2752,6 +2752,7 @@ dependencies = [
  "indicatif",
  "ndarray",
  "ort",
+ "rayon",
  "reqwest",
  "rusqlite",
  "serde",

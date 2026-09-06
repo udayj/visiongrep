@@ -204,6 +204,30 @@ mod tests {
     }
 
     #[test]
+    fn text_output_escapes_backslashes_and_control_characters() {
+        let terminal = Terminal::new(OutputFormat::Text, true);
+        let mut output = Vec::new();
+        terminal
+            .write_results_to(
+                &mut output,
+                &[result(PathBuf::from("café\\a\rb\u{1b}.png"))],
+            )
+            .unwrap();
+        assert_eq!(output, "0.500\tcafé\\\\a\\rb\\u{1b}.png\n".as_bytes());
+    }
+
+    #[test]
+    fn text_output_escapes_non_utf8_paths_without_losing_bytes() {
+        let terminal = Terminal::new(OutputFormat::Text, true);
+        let path = PathBuf::from(OsString::from_vec(b"a\\b\xff\n.png".to_vec()));
+        let mut output = Vec::new();
+        terminal
+            .write_results_to(&mut output, &[result(path)])
+            .unwrap();
+        assert_eq!(output, b"0.500\ta\\\\b\\xff\\x0a.png\n");
+    }
+
+    #[test]
     fn null_output_preserves_exact_non_utf8_paths() {
         let terminal = Terminal::new(OutputFormat::PathsNull, true);
         let path = PathBuf::from(OsString::from_vec(vec![b'a', 0xff, b'.', b'j']));

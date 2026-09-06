@@ -149,9 +149,10 @@ fn extract_embeddings(
         });
     }
     let values = output.iter().copied().collect::<Vec<_>>();
-    Ok(values
-        .chunks_exact(EMBEDDING_DIM)
-        .map(<[f32]>::to_vec)
+    let (embeddings, _) = values.as_chunks::<EMBEDDING_DIM>();
+    Ok(embeddings
+        .iter()
+        .map(|embedding| embedding.to_vec())
         .collect())
 }
 
@@ -217,9 +218,9 @@ mod tests {
 
     fn decode_hex(value: &str) -> Vec<u8> {
         assert_eq!(value.len() % 2, 0);
-        value
-            .as_bytes()
-            .chunks_exact(2)
+        let (pairs, _) = value.as_bytes().as_chunks::<2>();
+        pairs
+            .iter()
             .map(|pair| {
                 let pair = std::str::from_utf8(pair).unwrap();
                 u8::from_str_radix(pair, 16).unwrap()
@@ -246,7 +247,6 @@ mod tests {
     /// The current encoder declares a dynamic batch dimension, which is required before the
     /// indexing pipeline may concatenate preprocessed image tensors.
     #[test]
-    #[ignore = "requires the pinned CLIP vision model in the visiongrep cache"]
     fn vision_model_contract_supports_dynamic_batches() {
         let paths = crate::model::model_paths().unwrap();
         let mut session = VisionSession::load(&paths).unwrap();
@@ -322,10 +322,8 @@ mod tests {
         println!("{}", serde_json::to_string(&reports).unwrap());
     }
 
-    /// Run explicitly after installing the pinned model artifacts; ordinary unit tests stay fast
-    /// and never initiate a 250 MB download.
+    /// Uses shared installed artifacts and checked-in reference vectors without downloading.
     #[test]
-    #[ignore = "requires the pinned CLIP text model and tokenizer in the visiongrep cache"]
     fn text_embeddings_match_openclip_golden_vectors() {
         let fixture: GoldenFixture = serde_json::from_str(GOLDEN_VECTORS).unwrap();
         assert_eq!(

@@ -63,9 +63,11 @@ impl NormalizedEmbedding {
             });
         }
 
-        let values = bytes
-            .chunks_exact(std::mem::size_of::<f32>())
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        let (encoded_values, _) = bytes.as_chunks::<4>();
+        let values = encoded_values
+            .iter()
+            .copied()
+            .map(f32::from_le_bytes)
             .collect::<Vec<_>>();
         if values.iter().any(|value| !value.is_finite()) {
             return Err(EmbeddingError::NonFinite);
@@ -116,6 +118,22 @@ pub(crate) fn prepare_image(
         decoding_elapsed,
         preprocessing_elapsed,
     })
+}
+
+/// Uses the same inference and normalization boundary for a query image as for corpus batches.
+pub(crate) fn embed_prepared_image(
+    prepared: PreparedImage,
+    session: &mut VisionSession,
+    timing: &mut TimingRecorder,
+) -> Result<NormalizedEmbedding, VisionGrepError> {
+    let embeddings = embed_prepared_images(vec![prepared], session, timing)?;
+    let [embedding] = embeddings.try_into().map_err(|embeddings: Vec<_>| {
+        VisionGrepError::ImageBatchResultCount {
+            expected: 1,
+            actual: embeddings.len(),
+        }
+    })?;
+    Ok(embedding)
 }
 
 pub(crate) fn embed_prepared_images(
@@ -299,7 +317,7 @@ fn resized_dimensions(width: u32, height: u32) -> (u32, u32) {
 }
 
 fn round_half_to_even(floor: u32, numerator: u32) -> u32 {
-    if numerator % 2 == 0 || floor % 2 == 0 {
+    if numerator.is_multiple_of(2) || floor.is_multiple_of(2) {
         floor
     } else {
         floor + 1
@@ -360,9 +378,9 @@ mod tests {
 
     fn decode_hex(value: &str) -> Vec<u8> {
         assert_eq!(value.len() % 2, 0);
-        value
-            .as_bytes()
-            .chunks_exact(2)
+        let (pairs, _) = value.as_bytes().as_chunks::<2>();
+        pairs
+            .iter()
             .map(|pair| {
                 let pair = std::str::from_utf8(pair).unwrap();
                 u8::from_str_radix(pair, 16).unwrap()
@@ -400,6 +418,41 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(NormalizedEmbedding::from_le_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn model_embeddings_reject_non_finite_values() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut values = vec![0.0; EMBEDDING_DIM];
+            values[0] = value;
+            assert!(matches!(
+                NormalizedEmbedding::from_model_output(values),
+                Err(EmbeddingError::NonFinite)
+            ));
+        }
+    }
+
+    #[test]
+    fn cached_embeddings_reject_non_finite_values() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bytes = vec![0; EMBEDDING_BYTES];
+            bytes[..4].copy_from_slice(&value.to_le_bytes());
+            assert!(matches!(
+                NormalizedEmbedding::from_le_bytes(&bytes),
+                Err(EmbeddingError::NonFinite)
+            ));
+        }
+    }
+
+    #[test]
+    fn cached_embeddings_reject_incorrect_byte_lengths() {
+        for length in [0, EMBEDDING_BYTES - 1, EMBEDDING_BYTES + 1] {
+            assert!(matches!(
+                NormalizedEmbedding::from_le_bytes(&vec![0; length]),
+                Err(EmbeddingError::ByteLength { expected, actual })
+                    if expected == EMBEDDING_BYTES && actual == length
+            ));
+        }
     }
 
     #[test]
@@ -459,7 +512,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the pinned CLIP vision model in the visiongrep cache"]
     fn batched_and_single_image_inference_match() {
         let directory = tempfile::tempdir().unwrap();
         let paths = [
@@ -477,6 +529,7 @@ mod tests {
             image.save_with_format(path, ImageFormat::Png).unwrap();
         }
 
+        // Load the shared installed artifact directly; test execution never downloads models.
         let model_paths = crate::model::model_paths().unwrap();
         let mut session = VisionSession::load(&model_paths).unwrap();
         let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
@@ -507,7 +560,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the pinned DataComp vision model in the visiongrep cache"]
     fn image_embeddings_match_openclip_golden_vectors() {
         let fixture: GoldenFixture = serde_json::from_str(DATACOMP_GOLDEN).unwrap();
         assert_eq!(
@@ -567,7 +619,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires all pinned DataComp artifacts in the visiongrep cache"]
     fn cosine_scores_rankings_and_thresholds_match_openclip() {
         const THRESHOLD: f32 = 0.25;
 

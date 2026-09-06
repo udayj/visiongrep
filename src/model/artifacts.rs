@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
-use crate::application::ArtifactVerification;
 use crate::embedding::EmbeddingContract;
 use crate::error::VisionGrepError;
 use crate::timing::{ModelMetadata, Phase, TimingRecorder};
@@ -34,6 +33,12 @@ const TOKENIZER_SHA256: &str = "72ed5c96db5729294468543e4bc75fce14ca63f58e373002
 const VISION_MODEL_SIZE: u64 = 351_826_068;
 const TEXT_MODEL_SIZE: u64 = 254_344_274;
 const TOKENIZER_SIZE: u64 = 2_224_081;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArtifactVerification {
+    Fast,
+    Full,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct ArtifactSpec {
@@ -589,6 +594,71 @@ mod tests {
         assert!(matches!(error, VisionGrepError::Checksum { .. }));
         assert_eq!(fs::read(destination).unwrap(), b"previous artifact");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn incorrect_content_length_is_rejected_before_reading_the_body() {
+        for advertised_size in [3, 5] {
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("artifact.bin");
+            fs::write(&destination, b"previous artifact").unwrap();
+            let mut response = Cursor::new(b"good");
+            let error = install_download(
+                spec("revision-a", GOOD_SHA256, 4),
+                &mut response,
+                Some(advertised_size),
+                &destination,
+                &mut |_| panic!("a rejected content length must not report download progress"),
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                VisionGrepError::ArtifactSize { file, expected: 4, actual }
+                    if file == destination && actual == advertised_size
+            ));
+            assert_eq!(response.position(), 0);
+            assert_eq!(fs::read(&destination).unwrap(), b"previous artifact");
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn incorrect_body_size_preserves_the_installed_artifact_and_manifest() {
+        for body in [b"goo".as_slice(), b"good!".as_slice()] {
+            for content_length in [None, Some(4)] {
+                let directory = tempfile::tempdir().unwrap();
+                let destination = directory.path().join("artifact.bin");
+                let spec = spec("revision-a", GOOD_SHA256, 4);
+                fs::write(&destination, b"good").unwrap();
+                write_verified_manifest(spec, &destination).unwrap();
+                let marker = verified_manifest_path(&destination);
+                let original_manifest = fs::read(&marker).unwrap();
+                let mut events = Vec::new();
+                let error = install_download(
+                    spec,
+                    &mut Cursor::new(body),
+                    content_length,
+                    &destination,
+                    &mut |event| events.push(event),
+                )
+                .unwrap_err();
+
+                assert!(matches!(
+                    error,
+                    VisionGrepError::ArtifactSize { file, expected: 4, actual }
+                        if file == destination && actual == u64::try_from(body.len()).unwrap()
+                ));
+                assert_eq!(fs::read(&destination).unwrap(), b"good");
+                assert_eq!(fs::read(&marker).unwrap(), original_manifest);
+                assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, ArtifactEvent::DownloadFinished))
+                );
+            }
+        }
     }
 
     #[test]

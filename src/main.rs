@@ -30,7 +30,9 @@ fn main() {
 }
 
 fn run() -> Result<ExitStatus, VisionGrepError> {
-    let command = Cli::parse().into_command();
+    let command = Cli::parse()
+        .into_command()
+        .unwrap_or_else(|error| error.exit());
     let mut timing = TimingRecorder::new(
         command.timing_destination.is_some(),
         crate::model::timing_metadata(),

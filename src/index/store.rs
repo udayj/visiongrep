@@ -695,6 +695,69 @@ mod tests {
     }
 
     #[test]
+    fn custom_index_requires_a_file_name() {
+        let root = tempfile::tempdir().unwrap();
+        for requested in [Path::new(""), Path::new("/")] {
+            assert!(matches!(
+                IndexLocation::resolve(root.path(), Some(requested)),
+                Err(VisionGrepError::IndexPathWithoutFileName { path }) if path == requested
+            ));
+        }
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn custom_index_rejects_an_existing_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let requested = root.path().join("index-directory");
+        fs::create_dir(&requested).unwrap();
+        assert!(matches!(
+            IndexLocation::resolve(root.path(), Some(&requested)),
+            Err(VisionGrepError::IndexPathIsDirectory { path }) if path == requested
+        ));
+        assert!(requested.is_dir());
+        assert_eq!(fs::read_dir(&requested).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn custom_index_rejects_a_missing_parent_without_creating_it() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("missing");
+        let requested = parent.join("index.db");
+        assert!(matches!(
+            IndexLocation::resolve(root.path(), Some(&requested)),
+            Err(VisionGrepError::IndexFile { path, source, .. })
+                if path == parent && source.kind() == std::io::ErrorKind::NotFound
+        ));
+        assert!(!parent.exists());
+    }
+
+    #[test]
+    fn opening_a_newer_schema_preserves_the_database() {
+        let root = tempfile::tempdir().unwrap();
+        let location = local_location(root.path());
+        let mut index = open_disk_index(root.path());
+        insert(&mut index, &image_file(PathBuf::from("image.png")));
+        index
+            .upsert_query_embedding("a picture", &embedding())
+            .unwrap();
+        let future_version = EMBEDDING_CACHE_VERSION + 1;
+        index
+            .conn
+            .pragma_update(None, "user_version", future_version)
+            .unwrap();
+        drop(index);
+        let original = fs::read(location.path()).unwrap();
+
+        assert!(matches!(
+            ImageIndex::open(&location, root.path(), test_contract()),
+            Err(VisionGrepError::IndexVersionTooNew { found, supported })
+                if found == future_version && supported == EMBEDDING_CACHE_VERSION
+        ));
+        assert_eq!(fs::read(location.path()).unwrap(), original);
+    }
+
+    #[test]
     fn index_round_trips_embeddings() {
         let mut index = ImageIndex::in_memory().unwrap();
         let file = image_file(PathBuf::from("image.jpg"));
