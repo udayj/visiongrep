@@ -343,3 +343,84 @@ impl From<ImagePreparationError> for VisionGrepError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, ErrorKind};
+
+    use super::*;
+
+    #[test]
+    fn broken_pipe_detection_distinguishes_io_json_and_other_errors() {
+        for kind in [ErrorKind::BrokenPipe, ErrorKind::PermissionDenied] {
+            let expected = kind == ErrorKind::BrokenPipe;
+            let io_error = VisionGrepError::Io(io::Error::from(kind));
+            let json_error = VisionGrepError::JsonOutput {
+                source: serde_json::Error::io(io::Error::from(kind)),
+            };
+            assert_eq!(io_error.is_broken_pipe(), expected);
+            assert_eq!(json_error.is_broken_pipe(), expected);
+        }
+        let syntax_error = VisionGrepError::JsonOutput {
+            source: serde_json::from_slice::<serde_json::Value>(b"{").unwrap_err(),
+        };
+        assert!(!syntax_error.is_broken_pipe());
+        assert!(
+            !VisionGrepError::ModelMissing {
+                path: PathBuf::from("model.onnx")
+            }
+            .is_broken_pipe()
+        );
+    }
+
+    #[test]
+    fn oversized_image_conversion_preserves_path_and_resource_requirements() {
+        let path = PathBuf::from("large.png");
+        let error = ImagePreparationError::TooLarge {
+            path: path.clone(),
+            width: 12_000,
+            height: 9_000,
+            decoded_bytes: 324_000_000,
+            estimated_working_bytes: 972_000_000,
+        };
+        assert!(matches!(
+            VisionGrepError::from(error),
+            VisionGrepError::ImageTooLarge {
+                path: actual,
+                width: 12_000,
+                height: 9_000,
+                decoded_bytes: 324_000_000,
+                estimated_working_bytes: 972_000_000,
+            } if actual == path
+        ));
+    }
+
+    #[test]
+    fn invalid_image_dimensions_conversion_preserves_path_and_dimensions() {
+        let path = PathBuf::from("empty.png");
+        let error = ImagePreparationError::InvalidDimensions {
+            path: path.clone(),
+            width: 0,
+            height: 24,
+        };
+        assert!(matches!(
+            VisionGrepError::from(error),
+            VisionGrepError::InvalidImageDimensions { path: actual, width: 0, height: 24 }
+                if actual == path
+        ));
+    }
+
+    #[test]
+    fn image_decode_conversion_preserves_the_underlying_error() {
+        let path = PathBuf::from("unreadable.png");
+        let error = ImagePreparationError::Decode {
+            path: path.clone(),
+            source: image::ImageError::IoError(io::Error::from(ErrorKind::PermissionDenied)),
+        };
+        assert!(matches!(
+            VisionGrepError::from(error),
+            VisionGrepError::ImageDecode { path: actual, source: image::ImageError::IoError(source) }
+                if actual == path && source.kind() == ErrorKind::PermissionDenied
+        ));
+    }
+}

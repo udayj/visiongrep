@@ -1,3 +1,5 @@
+mod model_cache;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,7 +36,9 @@ fn search_image(
     flags: &[&str],
 ) -> SearchOutput {
     let timing_path = scratch.join("timing.json");
-    let output = Command::new(env!("CARGO_BIN_EXE_visiongrep"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_visiongrep"));
+    model_cache::prevent_downloads(&mut command);
+    let output = command
         .arg("--image")
         .arg(query)
         .arg(corpus)
@@ -94,27 +98,14 @@ fn indexed_embeddings(index_path: &Path) -> Vec<IndexedImage> {
 
 /// Requires only the pinned vision model; text artifacts deliberately remain absent.
 #[test]
-#[ignore = "requires XDG_CACHE_HOME containing the pinned DataComp vision model"]
 fn image_query_end_to_end() {
-    let installed_cache = PathBuf::from(
-        std::env::var_os("XDG_CACHE_HOME").expect("set XDG_CACHE_HOME to the pinned model cache"),
-    );
-    let source_model = installed_cache.join("visiongrep/models/datacomp_vision.onnx");
-    assert!(source_model.is_file(), "missing {}", source_model.display());
-
     let scratch = tempfile::tempdir().unwrap();
     let corpus = scratch.path().join("photos");
     let external = scratch.path().join("external.png");
     let cache = scratch.path().join("cache");
     let models = cache.join("visiongrep/models");
     fs::create_dir(&corpus).unwrap();
-    fs::create_dir_all(&models).unwrap();
-    // A symlink avoids copying hundreds of megabytes while keeping test cache writes isolated.
-    std::os::unix::fs::symlink(
-        source_model.canonicalize().unwrap(),
-        models.join("datacomp_vision.onnx"),
-    )
-    .unwrap();
+    model_cache::link_models(&cache, &["datacomp_vision.onnx"]);
 
     let query = corpus.join("query.png");
     let duplicate = corpus.join("duplicate.png");
@@ -135,6 +126,12 @@ fn image_query_end_to_end() {
     fs::copy(&query, &external).unwrap();
     let index = corpus.join(".visiongrep.db");
 
+    let uncached_fresh = search_image(&corpus, &query, &cache, scratch.path(), &["--no-cache"]);
+    assert_eq!(uncached_fresh.first_path(), duplicate);
+    assert_eq!(uncached_fresh.results.as_array().unwrap().len(), 2);
+    assert_eq!(uncached_fresh.invocations("vision_inference"), 1);
+    assert!(!index.exists());
+
     let fresh = search_image(&corpus, &external, &cache, scratch.path(), &[]);
     assert_eq!(fresh.first_path(), duplicate);
     assert_eq!(fresh.invocations("model_session_construction"), 1);
@@ -153,6 +150,13 @@ fn image_query_end_to_end() {
     assert_eq!(indexed.results.as_array().unwrap().len(), 2);
     assert_eq!(indexed.invocations("model_session_construction"), 0);
     assert_eq!(indexed.invocations("vision_inference"), 0);
+
+    let alias = scratch.path().join("query-alias.png");
+    std::os::unix::fs::symlink(&query, &alias).unwrap();
+    let aliased = search_image(&corpus, &alias, &cache, scratch.path(), &[]);
+    assert_eq!(aliased.first_path(), duplicate);
+    assert_eq!(aliased.results.as_array().unwrap().len(), 2);
+    assert_eq!(aliased.invocations("model_session_construction"), 0);
 
     fs::copy(&other, &external).unwrap();
     let changed_external = search_image(&corpus, &external, &cache, scratch.path(), &[]);
@@ -188,7 +192,9 @@ fn image_query_end_to_end() {
 
     let preserved = indexed_embeddings(&index);
     fs::write(&external, b"invalid query").unwrap();
-    let failed_reindex = Command::new(env!("CARGO_BIN_EXE_visiongrep"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_visiongrep"));
+    model_cache::prevent_downloads(&mut command);
+    let failed_reindex = command
         .arg("--image")
         .arg(&external)
         .arg(&corpus)

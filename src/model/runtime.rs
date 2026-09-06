@@ -247,7 +247,6 @@ mod tests {
     /// The current encoder declares a dynamic batch dimension, which is required before the
     /// indexing pipeline may concatenate preprocessed image tensors.
     #[test]
-    #[ignore = "requires the pinned CLIP vision model in the visiongrep cache"]
     fn vision_model_contract_supports_dynamic_batches() {
         let paths = crate::model::model_paths().unwrap();
         let mut session = VisionSession::load(&paths).unwrap();
@@ -323,10 +322,8 @@ mod tests {
         println!("{}", serde_json::to_string(&reports).unwrap());
     }
 
-    /// Run explicitly after installing the pinned model artifacts; ordinary unit tests stay fast
-    /// and never initiate a 250 MB download.
+    /// Uses shared installed artifacts and checked-in reference vectors without downloading.
     #[test]
-    #[ignore = "requires the pinned CLIP text model and tokenizer in the visiongrep cache"]
     fn text_embeddings_match_openclip_golden_vectors() {
         let fixture: GoldenFixture = serde_json::from_str(GOLDEN_VECTORS).unwrap();
         assert_eq!(

@@ -329,9 +329,11 @@ metrics, phase scenarios, cache-state labels, licensing, and exact reproduction 
 aggregate evidence is stored in `benchmarks/results/remote_foundation.json`; raw vectors, per-query
 logs, models, indexes, and dataset images remain runner artifacts or temporary files.
 
-Normal CI does not download models. Manually triggered model-contract CI verifies OpenCLIP, ONNX,
-tokenizer, golden vectors, scores, rankings, and batching. Heavy retrieval/timing and real Apple
-Silicon Core ML experiments are also manual workflows with read-only repository permissions.
+Normal CI runs unit, model correctness, and CLI end-to-end tests, preparing shared cached model
+artifacts once per runner before testing. Benchmarks and the cold-download test remain opt-in;
+see `tests/README.md`. Manual model-contract CI additionally verifies the OpenCLIP reference.
+Heavy retrieval/timing and real Apple Silicon Core ML experiments remain manual workflows with
+read-only repository permissions.
 
 ---
 

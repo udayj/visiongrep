@@ -271,6 +271,16 @@ mod tests {
     }
 
     #[test]
+    fn model_verification_is_opt_in() {
+        let default = Cli::try_parse_from(["visiongrep", "robot", "photos"]).unwrap();
+        assert!(!default.verify_models);
+        let explicit =
+            Cli::try_parse_from(["visiongrep", "robot", "photos", "--verify-models"]).unwrap();
+        assert!(explicit.verify_models);
+        assert!(explicit.into_command().is_ok());
+    }
+
+    #[test]
     fn reindex_conflicts_with_no_cache() {
         assert!(
             Cli::try_parse_from(["visiongrep", "robot", "photos", "--reindex", "--no-cache",])

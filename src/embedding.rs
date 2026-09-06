@@ -421,6 +421,41 @@ mod tests {
     }
 
     #[test]
+    fn model_embeddings_reject_non_finite_values() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut values = vec![0.0; EMBEDDING_DIM];
+            values[0] = value;
+            assert!(matches!(
+                NormalizedEmbedding::from_model_output(values),
+                Err(EmbeddingError::NonFinite)
+            ));
+        }
+    }
+
+    #[test]
+    fn cached_embeddings_reject_non_finite_values() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bytes = vec![0; EMBEDDING_BYTES];
+            bytes[..4].copy_from_slice(&value.to_le_bytes());
+            assert!(matches!(
+                NormalizedEmbedding::from_le_bytes(&bytes),
+                Err(EmbeddingError::NonFinite)
+            ));
+        }
+    }
+
+    #[test]
+    fn cached_embeddings_reject_incorrect_byte_lengths() {
+        for length in [0, EMBEDDING_BYTES - 1, EMBEDDING_BYTES + 1] {
+            assert!(matches!(
+                NormalizedEmbedding::from_le_bytes(&vec![0; length]),
+                Err(EmbeddingError::ByteLength { expected, actual })
+                    if expected == EMBEDDING_BYTES && actual == length
+            ));
+        }
+    }
+
+    #[test]
     fn preprocessing_center_crops_landscape_images() {
         let image = RgbImage::from_fn(4, 2, |x, _| {
             if x == 0 || x == 3 {
@@ -477,7 +512,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the pinned CLIP vision model in the visiongrep cache"]
     fn batched_and_single_image_inference_match() {
         let directory = tempfile::tempdir().unwrap();
         let paths = [
@@ -495,6 +529,7 @@ mod tests {
             image.save_with_format(path, ImageFormat::Png).unwrap();
         }
 
+        // Load the shared installed artifact directly; test execution never downloads models.
         let model_paths = crate::model::model_paths().unwrap();
         let mut session = VisionSession::load(&model_paths).unwrap();
         let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
@@ -525,7 +560,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the pinned DataComp vision model in the visiongrep cache"]
     fn image_embeddings_match_openclip_golden_vectors() {
         let fixture: GoldenFixture = serde_json::from_str(DATACOMP_GOLDEN).unwrap();
         assert_eq!(
@@ -585,7 +619,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires all pinned DataComp artifacts in the visiongrep cache"]
     fn cosine_scores_rankings_and_thresholds_match_openclip() {
         const THRESHOLD: f32 = 0.25;
 
