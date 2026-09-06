@@ -74,7 +74,7 @@ impl<'a> Ranker<'a> {
             return Vec::new();
         }
 
-        let mut heap = BinaryHeap::with_capacity(self.top);
+        let mut heap = BinaryHeap::with_capacity(self.top.min(images.len()));
         for image in images {
             let scoring_started = timing.start();
             let score = cosine_similarity(self.query_embedding, &image.embedding);
@@ -198,6 +198,35 @@ mod tests {
 
         assert_eq!(results[0].path, PathBuf::from("a.jpg"));
         assert_eq!(results[1].path, PathBuf::from("b.jpg"));
+    }
+
+    #[test]
+    fn maximum_top_handles_tiny_and_empty_corpora() {
+        let query = embedding(1.0, 0.0);
+        let ranker = Ranker::new(&query, usize::MAX, 0.5);
+        let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
+        let results = ranker.rank(
+            vec![
+                ImageRecord {
+                    path: PathBuf::from("weaker.jpg"),
+                    embedding: embedding(0.6, 0.8),
+                },
+                ImageRecord {
+                    path: PathBuf::from("best.jpg"),
+                    embedding: embedding(1.0, 0.0),
+                },
+                ImageRecord {
+                    path: PathBuf::from("excluded.jpg"),
+                    embedding: embedding(0.0, 1.0),
+                },
+            ],
+            &mut timing,
+        );
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].path, PathBuf::from("best.jpg"));
+        assert_eq!(results[1].path, PathBuf::from("weaker.jpg"));
+        assert!(ranker.rank(Vec::new(), &mut timing).is_empty());
     }
 
     #[test]
