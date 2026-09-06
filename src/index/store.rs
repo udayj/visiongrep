@@ -817,6 +817,34 @@ mod tests {
     }
 
     #[test]
+    fn reconciliation_preserves_unchanged_discovered_paths_with_shared_prefixes() {
+        use crate::index::scan::{SearchRoot, discover_images};
+
+        let directory = tempfile::tempdir().unwrap();
+        fs::create_dir(directory.path().join("a")).unwrap();
+        for path in ["a/x.jpg", "a.jpg"] {
+            fs::write(directory.path().join(path), []).unwrap();
+        }
+        let root = SearchRoot::resolve(directory.path()).unwrap();
+        let mut index = ImageIndex::in_memory().unwrap();
+        for file in discover_images(&root).unwrap() {
+            insert(&mut index, &file);
+        }
+
+        let files = discover_images(&root).unwrap();
+        let plan = index.plan_reconciliation(&files).unwrap();
+
+        assert!(plan.missing().is_empty());
+        assert!(plan.stale_paths.is_empty());
+        index.apply_reconciliation(&plan).unwrap();
+        let records = index.all_embeddings(Path::new("")).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].path, Path::new("a.jpg"));
+        assert_eq!(records[1].path, Path::new("a/x.jpg"));
+        assert!(records.iter().all(|record| record.embedding == embedding()));
+    }
+
+    #[test]
     fn bulk_reconciliation_handles_discovered_paths_before_and_after_cached_paths() {
         let mut index = ImageIndex::in_memory().unwrap();
         let cached = image_file(PathBuf::from("middle.jpg"));

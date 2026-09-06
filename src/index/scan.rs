@@ -1,3 +1,4 @@
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -49,8 +50,8 @@ pub(crate) struct ImageFile {
 
 /// Recursively discovers supported images and snapshots metadata used for cache invalidation.
 ///
-/// Symbolic links are not followed. Results are sorted by native path for deterministic indexing
-/// and output behavior independent of directory iteration order.
+/// Symbolic links are not followed. Results are sorted by exact native Unix path bytes to match
+/// SQLite's BLOB ordering for incremental reconciliation.
 pub(crate) fn discover_images(root: &SearchRoot) -> Result<Vec<ImageFile>, VisionGrepError> {
     let mut files = Vec::new();
 
@@ -118,7 +119,12 @@ pub(crate) fn discover_images(root: &SearchRoot) -> Result<Vec<ImageFile>, Visio
         });
     }
 
-    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    files.sort_by(|left, right| {
+        left.relative_path
+            .as_os_str()
+            .as_bytes()
+            .cmp(right.relative_path.as_os_str().as_bytes())
+    });
     Ok(files)
 }
 
