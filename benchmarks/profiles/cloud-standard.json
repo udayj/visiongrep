@@ -1,0 +1,23 @@
+{
+  "name": "cloud-standard",
+  "samples": 21,
+  "corpus_size": 500,
+  "cloud": true,
+  "quality": true,
+  "scenarios": [
+    "index_absent",
+    "reindex",
+    "no_cache",
+    "novel_text",
+    "cached_text",
+    "external_image_first",
+    "external_image_repeated",
+    "indexed_image",
+    "modified_query_image",
+    "added_1pct",
+    "modified_1pct",
+    "deleted_1pct",
+    "renamed_1pct",
+    "read_only"
+  ]
+}

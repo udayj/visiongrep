@@ -1,0 +1,14 @@
+{
+  "name": "local-quick",
+  "samples": 5,
+  "corpus_size": 500,
+  "cloud": false,
+  "quality": true,
+  "scenarios": [
+    "index_absent",
+    "novel_text",
+    "cached_text",
+    "indexed_image",
+    "modified_1pct"
+  ]
+}

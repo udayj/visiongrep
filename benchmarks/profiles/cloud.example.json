@@ -1,0 +1,9 @@
+{
+  "region": "us-east-1",
+  "ami": "REPLACE_WITH_PINNED_AMI",
+  "subnet": "REPLACE_WITH_PUBLIC_SUBNET",
+  "security_group": "REPLACE_WITH_NO_INGRESS_SECURITY_GROUP",
+  "instance_profile": "REPLACE_WITH_INSTANCE_PROFILE",
+  "bucket": "REPLACE_WITH_PRIVATE_BUCKET",
+  "scheduler_role": "REPLACE_WITH_SCHEDULER_ROLE_ARN"
+}
