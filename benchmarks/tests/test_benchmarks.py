@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from unittest.mock import patch
 from pathlib import Path
 
@@ -22,7 +23,7 @@ class ScenarioState(unittest.TestCase):
         class InspectScenario(Scenario):
             def execute(self, label, query, *, measured, **options):
                 if not self.index.exists() and not options.get("no_cache"):
-                    with sqlite3.connect(self.index) as connection:
+                    with closing(sqlite3.connect(self.index)) as connection, connection:
                         connection.execute("CREATE TABLE marker (value INTEGER)")
                         connection.execute("INSERT INTO marker VALUES (1)")
                 return {
@@ -111,39 +112,165 @@ class Lifecycle(unittest.TestCase):
 
 
 class Decisions(unittest.TestCase):
+    def decision(self, comparisons, *, quality_ok=True, environment_ok=True):
+        return verdict(
+            comparisons,
+            quality_ok,
+            environment_ok,
+            required_scenarios=("novel_text", "index_absent"),
+        )[0]
+
+    def comparison(self, gain, interval=None, pairs=21):
+        return {
+            "improvement": gain,
+            "interval": interval or [gain, gain],
+            "pairs": pairs,
+        }
+
     def test_21_is_second_slowest(self):
         self.assertEqual(summary(list(range(1, 22)))["p95"], 20)
         self.assertIsNone(summary([1, 2, 3])["p95"])
 
-    def test_improvement_and_regression(self):
+    def test_any_standard_scenario_can_supply_the_improvement(self):
         baseline = [100 + i % 3 for i in range(21)]
         better = paired(baseline, [v * 0.90 for v in baseline])
-        worse = paired(baseline, [v * 1.10 for v in baseline])
-        self.assertEqual(
-            verdict({"target": better}, "target", True, True)[0], "qualifies"
-        )
-        self.assertEqual(
-            verdict({"target": better, "other": worse}, "target", True, True)[0],
-            "does_not_qualify",
-        )
-        self.assertEqual(
-            verdict({"target": better}, "target", True, False)[0], "invalid"
-        )
-        self.assertEqual(
-            verdict({"target": better}, "target", False, True)[0], "does_not_qualify"
-        )
+        unchanged = paired(baseline, baseline)
+        for improved in ("novel_text", "index_absent"):
+            with self.subTest(improved=improved):
+                results = {"novel_text": unchanged, "index_absent": unchanged}
+                results[improved] = better
+                self.assertEqual(self.decision(results), "qualifies")
+
+    def test_regression_elsewhere_blocks_a_supported_improvement(self):
+        results = {
+            "novel_text": self.comparison(0.1),
+            "index_absent": self.comparison(-0.1),
+        }
+        self.assertEqual(self.decision(results), "does_not_qualify")
+
+    def test_uncertain_regression_cannot_pass(self):
+        results = {
+            "novel_text": self.comparison(0.1),
+            "index_absent": self.comparison(-0.01, [-0.06, 0.03]),
+        }
+        self.assertEqual(self.decision(results), "inconclusive")
+
+    def test_regression_boundary_passes_when_excluded(self):
+        results = {
+            "novel_text": self.comparison(0.1),
+            "index_absent": self.comparison(0, [-0.05, 0.02]),
+        }
+        self.assertEqual(self.decision(results), "qualifies")
+
+    def test_unsupported_large_estimate_cannot_pass(self):
+        results = {
+            "novel_text": self.comparison(0.08, [-0.02, 0.15]),
+            "index_absent": self.comparison(0),
+        }
+        self.assertEqual(self.decision(results), "inconclusive")
+
+    def test_supported_five_percent_boundary(self):
+        results = {
+            "novel_text": self.comparison(0.05, [0.01, 0.09]),
+            "index_absent": self.comparison(0),
+        }
+        self.assertEqual(self.decision(results), "qualifies")
+
+    def test_no_meaningful_gain_does_not_qualify(self):
+        results = {
+            "novel_text": self.comparison(0.02),
+            "index_absent": self.comparison(0),
+        }
+        self.assertEqual(self.decision(results), "does_not_qualify")
 
     def test_short_run_cannot_qualify(self):
-        result = paired([100] * 5, [80] * 5)
-        self.assertEqual(
-            verdict({"target": result}, "target", True, True)[0], "inconclusive"
-        )
+        results = {
+            "novel_text": self.comparison(0.1, pairs=5),
+            "index_absent": self.comparison(0, pairs=5),
+        }
+        self.assertEqual(self.decision(results), "inconclusive")
 
-    def test_small_gain_does_not_qualify(self):
-        result = paired([100] * 21, [98] * 21)
-        self.assertEqual(
-            verdict({"target": result}, "target", True, True)[0], "does_not_qualify"
-        )
+    def test_missing_scenarios_and_empty_runs_cannot_qualify(self):
+        for results in ({}, {"index_absent": self.comparison(0.2)}):
+            self.assertEqual(self.decision(results), "inconclusive")
+
+    def test_quality_and_environment_remain_required(self):
+        results = {
+            "novel_text": self.comparison(0.1),
+            "index_absent": self.comparison(0),
+        }
+        self.assertEqual(self.decision(results, quality_ok=False), "does_not_qualify")
+        self.assertEqual(self.decision(results, environment_ok=False), "invalid")
+
+
+class SuiteQualification(unittest.TestCase):
+    def compare_suite(
+        self,
+        *,
+        profile_name="cloud-standard",
+        missing_index=False,
+        resource_regression=None,
+        quality_ok=True,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = {
+                "name": profile_name,
+                "quality": True,
+                "scenarios": list(SCENARIOS),
+            }
+            config = {
+                "directory": temporary,
+                "profile": profile,
+                "mode": "compare",
+                "max_seconds": 60,
+                "hourly_budget_usd": 0,
+            }
+            run = Run(config)
+            run.report["quality_comparison"] = {"passed": quality_ok}
+            for name in SCENARIOS:
+                run.report["samples"][name] = {}
+                for role in ("foundation", "candidate"):
+                    sample = {
+                        "wall_ms": 90
+                        if role == "candidate" and name == "index_absent"
+                        else 100,
+                        "peak_rss_bytes": 1000,
+                        "timing": {"phases": []},
+                    }
+                    if name != "no_cache" and not (
+                        missing_index and role == "candidate" and name == "novel_text"
+                    ):
+                        sample["index_bytes"] = 2000
+                    if (
+                        resource_regression
+                        and role == "candidate"
+                        and name == "index_absent"
+                    ):
+                        sample[resource_regression] *= 1.1
+                    run.report["samples"][name][role] = [sample] * 21
+            run.summarize()
+            return run.report["verdict"]
+
+    def test_full_suite_qualifies_without_a_target(self):
+        self.assertEqual(self.compare_suite(), "qualifies")
+
+    def test_resource_and_quality_checks_are_required(self):
+        for field in ("peak_rss_bytes", "index_bytes"):
+            with self.subTest(field=field):
+                self.assertEqual(
+                    self.compare_suite(resource_regression=field), "does_not_qualify"
+                )
+        self.assertEqual(self.compare_suite(quality_ok=False), "does_not_qualify")
+        self.assertEqual(self.compare_suite(missing_index=True), "inconclusive")
+
+    def test_screening_profiles_cannot_qualify_even_with_full_samples(self):
+        for name in ("local-quick", "cloud-scale"):
+            with self.subTest(profile=name):
+                self.assertEqual(self.compare_suite(profile_name=name), "inconclusive")
+
+    def test_standard_profile_measures_every_scenario(self):
+        profile = read_json(BENCHMARKS / "profiles/cloud-standard.json")
+        self.assertCountEqual(profile["scenarios"], SCENARIOS)
 
 
 class Corpora(unittest.TestCase):

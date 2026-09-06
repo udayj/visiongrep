@@ -7,6 +7,7 @@ import random
 import sqlite3
 import statistics
 import struct
+from contextlib import closing
 from pathlib import Path
 
 
@@ -97,7 +98,7 @@ def run(scenario, specification: dict, progress) -> dict:
 
 
 def embeddings(path: Path) -> dict:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
         return {
             bytes(key) if isinstance(key, bytes) else key.encode(): struct.unpack(
                 "<512f", blob

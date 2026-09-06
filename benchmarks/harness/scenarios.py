@@ -8,6 +8,7 @@ import os
 import shutil
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 from .assets import stage_images, stage_models
@@ -33,7 +34,7 @@ CALIBRATION = ("novel_text", "cached_text", "no_cache")
 
 
 def checkpoint(path: Path) -> None:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 

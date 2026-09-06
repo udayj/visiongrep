@@ -56,9 +56,10 @@ def paired(reference: list[float], candidate: list[float], alpha: float = 0.05) 
 
 def verdict(
     comparisons: dict,
-    target: str,
     quality_ok: bool,
     environment_ok: bool,
+    *,
+    required_scenarios: tuple[str, ...],
     improvement: float = 0.05,
     regression: float = 0.05,
 ) -> tuple[str, list[str]]:
@@ -70,8 +71,13 @@ def verdict(
         return "does_not_qualify", [
             "quality/behavior changed beyond the frozen tolerance"
         ]
-    if target not in comparisons:
-        raise ValueError("target scenario was not measured")
+    if not required_scenarios:
+        raise ValueError("qualification requires a nonempty standard suite")
+    missing = sorted(set(required_scenarios) - comparisons.keys())
+    if missing:
+        return "inconclusive", [
+            f"standard scenario not measured: {name}" for name in missing
+        ]
     definite_regressions = [
         name
         for name, result in comparisons.items()
@@ -85,11 +91,6 @@ def verdict(
         return "inconclusive", [
             "screening sample budget; confirmation requires at least 20 pairs"
         ]
-    result = comparisons[target]
-    if result["interval"][1] < improvement:
-        return "does_not_qualify", ["target improvement is below 5%"]
-    if result["improvement"] < improvement or result["interval"][0] <= 0:
-        return "inconclusive", ["target does not establish a meaningful improvement"]
     uncertain = [
         name for name, item in comparisons.items() if item["interval"][0] < -regression
     ]
@@ -97,6 +98,23 @@ def verdict(
         return "inconclusive", [
             f"cannot exclude material regression: {name}" for name in uncertain
         ]
-    return "qualifies", [
-        "target improved at least 5%; interval excludes zero; guardrails passed"
+    improved = [
+        name
+        for name in required_scenarios
+        if comparisons[name]["improvement"] >= improvement
+        and comparisons[name]["interval"][0] > 0
+    ]
+    if improved:
+        return "qualifies", [
+            f"supported improvement of at least {improvement:.0%}: {name}"
+            for name in improved
+        ] + ["all standard scenarios passed their regression checks"]
+    if all(
+        comparisons[name]["interval"][1] < improvement for name in required_scenarios
+    ):
+        return "does_not_qualify", [
+            f"no standard scenario improved by {improvement:.0%}"
+        ]
+    return "inconclusive", [
+        f"no supported improvement of at least {improvement:.0%} established"
     ]

@@ -12,7 +12,6 @@ import uuid
 from pathlib import Path
 
 from harness import assets, cloud, report, runner
-from harness.scenarios import SCENARIOS
 from harness.storage import (
     BENCHMARKS,
     FOUNDATION,
@@ -49,7 +48,6 @@ def parser():
             "--mode", choices=("compare", "validate", "record"), default="compare"
         )
         run.add_argument("--candidate", default="HEAD")
-        run.add_argument("--target", choices=SCENARIOS, default="novel_text")
         run.add_argument("--baseline", type=Path)
         run.add_argument("--cache", type=Path, default=DEFAULT_HOME / "cache")
         run.add_argument("--runs", type=Path, default=DEFAULT_HOME / "runs")
@@ -96,8 +94,6 @@ def configuration(args) -> dict:
         )
     if args.mode in ("record", "validate"):
         sha = FOUNDATION
-    if args.target not in profile["scenarios"]:
-        raise ValueError("target scenario is not included in this profile")
     hourly = 0.26 if args.cloud else 0
     seconds = int(
         min(
@@ -113,7 +109,6 @@ def configuration(args) -> dict:
         "profile": profile,
         "candidate": sha,
         "mode": args.mode,
-        "target": args.target,
         "baseline": str(args.baseline.resolve()) if args.baseline else None,
         "cache": str(cache),
         "corpus": str(corpus),

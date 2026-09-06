@@ -36,7 +36,7 @@ must come from three fresh instances. Aggregate them and compare candidates:
 
 ```sh
 python3 benchmarks/bench.py foundation /path/run1 /path/run2 /path/run3 --output /path/foundation.json
-python3 benchmarks/bench.py run --candidate COMMIT --baseline /path/foundation.json --target novel_text --detach
+python3 benchmarks/bench.py run --candidate COMMIT --baseline /path/foundation.json --detach
 ```
 
 Builds are cached by commit and OS/architecture with verified binary digests. Use consistent
@@ -64,12 +64,21 @@ bootstrap intervals with Bonferroni-adjusted alpha across timing scenarios. Fixe
 avoid repeated peeking until significance. At 21 samples, p95 is the second-slowest value
 and is labeled a rough estimate. Fewer than 20 pairs are screening evidence only.
 
-Declare the target scenario before launching. Qualification requires at least 5% measured
-improvement, an interval excluding zero, unchanged quality/behavior, and exclusion of more
-than 5% timing regression elsewhere. This does not mean the whole interval exceeds 5%.
-Definite regressions fail; unresolved differences are inconclusive. Scale-only results
-cannot establish overall quality or qualify a candidate.
-Memory/index-size comparisons also guard against more than 5% regressions before qualification.
+Qualification uses the entire standard suite; there is no required target scenario:
+
+1. Measure every standard scenario.
+2. Establish at least one supported improvement of 5% or more.
+3. Pass the regression check for every other scenario (and the improved scenarios).
+4. Pass quality, behavior, memory, and index-size checks.
+
+A supported improvement means a measured gain of at least 5% with an interval excluding
+zero; it does not mean the entire interval exceeds 5%. Intervals remain adjusted across
+all timing scenarios, including when selecting the strongest improvement. Regression checks
+retain their separate 5% tolerance: the interval must exclude a slowdown greater than 5%.
+Memory/index-size checks use the same regression tolerance. Reports name every supported
+improvement when a candidate qualifies. Missing scenarios or resource checks cannot pass.
+Definite regressions fail; unresolved checks are inconclusive. Local-quick and cloud-scale
+are screening profiles and cannot qualify a candidate, even with more samples.
 
 Reports include external process latency, median/p95/spread, isolated child peak RSS,
 checkpointed index bytes and bytes/image, full-index images/second, every application phase,

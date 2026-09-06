@@ -17,7 +17,7 @@ from pathlib import Path
 from . import quality
 from .assets import verify
 from .report import render
-from .scenarios import CALIBRATION, Scenario
+from .scenarios import CALIBRATION, SCENARIOS, Scenario
 from .statistics import paired, summary, verdict
 from .storage import (
     BENCHMARKS,
@@ -527,16 +527,27 @@ class Run:
         else:
             result, reasons = verdict(
                 self.report["comparisons"],
-                config["target"],
                 self.report.get("quality_comparison", {}).get("passed", False),
                 True,
+                required_scenarios=SCENARIOS,
             )
-            if not self.profile["quality"]:
+            if self.profile["name"] != "cloud-standard":
                 result, reasons = (
                     "inconclusive",
-                    ["scale-only report; combine with standard quality evaluation"],
+                    [
+                        "screening profile; qualification requires the complete cloud-standard suite"
+                    ],
                 )
             elif result == "qualifies":
+                required_resources = {
+                    name + ":" + field
+                    for name in SCENARIOS
+                    for field in ("peak_rss_bytes", "index_bytes")
+                    if field != "index_bytes" or name != "no_cache"
+                }
+                missing_resources = sorted(
+                    required_resources - self.report["resource_comparisons"].keys()
+                )
                 regressions = [
                     name
                     for name, item in self.report["resource_comparisons"].items()
@@ -547,7 +558,15 @@ class Run:
                     for name, item in self.report["resource_comparisons"].items()
                     if item["interval"][0] < -0.05
                 ]
-                if regressions:
+                if missing_resources:
+                    result, reasons = (
+                        "inconclusive",
+                        [
+                            "missing resource check: " + name
+                            for name in missing_resources
+                        ],
+                    )
+                elif regressions:
                     result, reasons = (
                         "does_not_qualify",
                         ["memory/index regression: " + name for name in regressions],
@@ -559,6 +578,10 @@ class Run:
                             "cannot exclude memory/index regression: " + name
                             for name in uncertain
                         ],
+                    )
+                else:
+                    reasons.append(
+                        "quality, behavior, memory, and index-size checks passed"
                     )
             self.report.update(verdict=result, reasons=reasons)
 
