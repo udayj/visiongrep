@@ -73,11 +73,6 @@ def verdict(
         ]
     if not required_scenarios:
         raise ValueError("qualification requires a nonempty standard suite")
-    missing = sorted(set(required_scenarios) - comparisons.keys())
-    if missing:
-        return "inconclusive", [
-            f"standard scenario not measured: {name}" for name in missing
-        ]
     definite_regressions = [
         name
         for name, result in comparisons.items()
@@ -86,6 +81,11 @@ def verdict(
     if definite_regressions:
         return "does_not_qualify", [
             f"material regression: {name}" for name in definite_regressions
+        ]
+    missing = sorted(set(required_scenarios) - comparisons.keys())
+    if missing:
+        return "inconclusive", [
+            f"standard scenario not measured: {name}" for name in missing
         ]
     if any(result["pairs"] < 20 for result in comparisons.values()):
         return "inconclusive", [

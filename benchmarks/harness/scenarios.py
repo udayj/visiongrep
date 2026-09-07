@@ -12,6 +12,7 @@ from contextlib import closing
 from pathlib import Path
 
 from .assets import stage_images, stage_models
+from . import behavior
 from .storage import BENCHMARKS, read_json, write_json
 
 SCENARIOS = (
@@ -68,6 +69,8 @@ class Scenario:
         self.text = "a bicycle near water"
         # Warmup builds fast artifact verification sidecars before any samples.
         self.execute("warmup", self.text, measured=False)
+        checkpoint(self.index)
+        shutil.copyfile(self.index, root / "expected.db")
         if name == "added_1pct":
             for row in self.rows[: self.changed]:
                 (self.images / row["file_name"]).unlink()
@@ -144,10 +147,14 @@ class Scenario:
         if metrics["exit_code"] != (0 if results else 1):
             raise ValueError("CLI exit code disagrees with its results")
         metrics["results"] = [
-            {"path": Path(item["path"]).name, "score": item["score"]}
+            {
+                "path": str(Path(item["path"]).relative_to(self.images)),
+                "score": item["score"],
+            }
             for item in results
         ]
         if measured:
+            metrics["behavior"] = behavior.check(self, metrics, image, no_cache, top)
             if self.index.exists():
                 checkpoint(self.index)
                 metrics["index_bytes"] = self.index.stat().st_size
@@ -190,6 +197,8 @@ class Scenario:
                     self.cache / "objects" / replacement["sha256"],
                     self.images / row["file_name"],
                 )
+                stamp = self.original_stats[row["file_name"]] + 1_000_000_000
+                os.utime(self.images / row["file_name"], ns=(stamp, stamp))
         if name in ("deleted_1pct", "renamed_1pct"):
             for row in self.rows[: self.changed]:
                 path = self.images / row["file_name"]

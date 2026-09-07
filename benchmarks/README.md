@@ -39,7 +39,14 @@ python3 benchmarks/bench.py foundation /path/run1 /path/run2 /path/run3 --output
 python3 benchmarks/bench.py run --candidate COMMIT --baseline /path/foundation.json --detach
 ```
 
-Builds are cached by commit and OS/architecture with verified binary digests. Use consistent
+Builds use the same routine locally and on EC2. Cache keys include the commit, source
+digest, actual Rust/Cargo/compiler/linker identities, release profile, target, and SDK.
+Binary digests are verified on reuse. Inherited build overrides (including
+`RUSTUP_TOOLCHAIN`, Rust flags, Cargo profile settings, and native compiler flags) are
+removed; the commit's pinned toolchain is selected explicitly. An isolated Cargo home
+reuses downloaded dependencies. Cargo configuration files are rejected until their
+overrides can be supported explicitly. The effective build fingerprint must match between
+foundation and candidate and in the saved foundation contract. Use consistent
 power settings and minimal competing work locally. The local profile uses the normal
 application worker cap, not a four-core limit on the MacBook. Local/cloud measurements have
 separate foundations. Changing the harness, profile, corpus lock, model, or environment
@@ -79,6 +86,18 @@ Memory/index-size checks use the same regression tolerance. Reports name every s
 improvement when a candidate qualifies. Missing scenarios or resource checks cannot pass.
 Definite regressions fail; unresolved checks are inconclusive. Local-quick and cloud-scale
 are screening profiles and cannot qualify a candidate, even with more samples.
+Screening preserves definitive failures and their reasons, including quality, behavior,
+timing, and resource regressions.
+
+After each invocation, outside timing, behavior checks require the expected result count
+and eligible image paths, including image-query self-exclusion. Index checks compare
+membership and file metadata against the mutated corpus and embeddings against the
+original image embeddings, mapping replacements and renames to their expected source.
+Every measured pair also compares foundation/candidate exit codes, returned rankings,
+scores, and all persisted embeddings. Missing or failed checks block qualification and
+same-commit validation; failures also prevent recording a foundation. These checks use
+the existing fixed-model embedding/score tolerance of `1e-4` and exact ranking agreement.
+Reports from older harness/build contracts require recalibration.
 
 Reports include external process latency, median/p95/spread, isolated child peak RSS,
 checkpointed index bytes and bytes/image, full-index images/second, every application phase,

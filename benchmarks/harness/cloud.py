@@ -78,7 +78,7 @@ python3 -c "import tarfile; tarfile.open('input.tar.gz').extractall('.', filter=
 export BENCH_INSTANCE_ID=$(cat instance-id)
 aws s3 sync {shlex.quote("s3://" + bucket + "/artifacts/objects/")} cache/objects/ --only-show-errors
 python3 - <<'PYBOOT'
-import json, pathlib, subprocess, os, time
+import json, pathlib
 root = pathlib.Path('/opt/visiongrep-bench')
 config = json.loads((root/'config.json').read_text())
 config['directory'] = str(root/'runs/current')
@@ -86,23 +86,12 @@ config['cache'] = str(root/'cache')
 config['corpus'] = str(root/'corpus.json')
 if config.get('baseline'):
     config['baseline'] = str(root/'baseline.json')
-config['binaries'] = {{}}
-started = time.time()
-for role in (['foundation'] if config['mode'] == 'record' else ['foundation', 'candidate']):
-    source = root/role
-    sha = config['source_commits'][role]
-    env = os.environ.copy()
-    env['VISIONGREP_BUILD_COMMIT'] = sha
-    env['CARGO_TARGET_DIR'] = str(source/'target')
-    subprocess.run(['cargo','build','--release','--locked'], cwd=source, env=env, check=True)
-    config['binaries'][role] = {{'path':str(source/'target/release/visiongrep'),'sha':sha}}
-if time.time() >= float(os.environ['BENCH_LAUNCH_EPOCH']) + config['max_seconds']:
-    raise RuntimeError('build exhausted runtime budget')
+config['sources'] = {{role: str(root/role) for role in config['source_commits']}}
 (root/'runs/current').mkdir(parents=True, exist_ok=True)
 (root/'config.json').write_text(json.dumps(config))
 PYBOOT
 chown -R bench:bench /opt/visiongrep-bench
-runuser -u bench --preserve-environment -- python3 benchmarks/bench.py worker --config config.json
+runuser -u bench -- python3 benchmarks/bench.py worker --config config.json
 """
     return script
 

@@ -211,6 +211,9 @@ class SuiteQualification(unittest.TestCase):
         missing_index=False,
         resource_regression=None,
         quality_ok=True,
+        behavior_ok=True,
+        mode="compare",
+        return_report=False,
     ):
         with tempfile.TemporaryDirectory() as temporary:
             profile = {
@@ -221,7 +224,7 @@ class SuiteQualification(unittest.TestCase):
             config = {
                 "directory": temporary,
                 "profile": profile,
-                "mode": "compare",
+                "mode": mode,
                 "max_seconds": 60,
                 "hourly_budget_usd": 0,
             }
@@ -236,6 +239,13 @@ class SuiteQualification(unittest.TestCase):
                         else 100,
                         "peak_rss_bytes": 1000,
                         "timing": {"phases": []},
+                        "behavior": {"passed": True, "reasons": []},
+                        "behavior_comparison": {
+                            "passed": behavior_ok,
+                            "reasons": []
+                            if behavior_ok
+                            else ["scenario rankings differ"],
+                        },
                     }
                     if name != "no_cache" and not (
                         missing_index and role == "candidate" and name == "novel_text"
@@ -249,7 +259,7 @@ class SuiteQualification(unittest.TestCase):
                         sample[resource_regression] *= 1.1
                     run.report["samples"][name][role] = [sample] * 21
             run.summarize()
-            return run.report["verdict"]
+            return run.report if return_report else run.report["verdict"]
 
     def test_full_suite_qualifies_without_a_target(self):
         self.assertEqual(self.compare_suite(), "qualifies")
@@ -267,6 +277,31 @@ class SuiteQualification(unittest.TestCase):
         for name in ("local-quick", "cloud-scale"):
             with self.subTest(profile=name):
                 self.assertEqual(self.compare_suite(profile_name=name), "inconclusive")
+
+    def test_screening_preserves_quality_failure_and_reason(self):
+        report = self.compare_suite(
+            profile_name="local-quick", quality_ok=False, return_report=True
+        )
+        self.assertEqual(report["verdict"], "does_not_qualify")
+        self.assertTrue(
+            any("quality/behavior" in reason for reason in report["reasons"])
+        )
+
+    def test_screening_preserves_resource_failure(self):
+        self.assertEqual(
+            self.compare_suite(
+                profile_name="local-quick", resource_regression="peak_rss_bytes"
+            ),
+            "does_not_qualify",
+        )
+
+    def test_behavior_failure_blocks_improvement_and_validation(self):
+        for mode, expected in (
+            ("compare", "does_not_qualify"),
+            ("validate", "validation_failed"),
+            ("record", "invalid"),
+        ):
+            self.assertEqual(self.compare_suite(behavior_ok=False, mode=mode), expected)
 
     def test_standard_profile_measures_every_scenario(self):
         profile = read_json(BENCHMARKS / "profiles/cloud-standard.json")

@@ -23,7 +23,9 @@ S3 writes), Rust 1.98.1, a native compiler/linker, pkg-config, OpenSSL developme
 CA certificates, curl, systemd, runuser, and an unprivileged user named `bench`.
 Use verified installation procedures and record exact versions in the AMI description.
 Disable background package updates for this dedicated benchmark image. Make the toolchain
-available to the build user. Do not use a minimal image without these prerequisites.
+available to the `bench` user, including `rustup` and the pinned toolchain (not only to
+root). The worker builds and measures as `bench`, using the same sanitized build routine
+as local runs. Do not use a minimal image without these prerequisites.
 
 The runner never selects `latest` or installs OS packages at boot. AMI changes require
 calibration. Builds use each commit's locked dependencies before measurement; first

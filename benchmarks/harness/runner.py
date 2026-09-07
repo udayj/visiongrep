@@ -9,64 +9,25 @@ import shutil
 import signal
 import socket
 import subprocess
-import tarfile
 import threading
 import time
 from pathlib import Path
 
-from . import quality
+from . import behavior, quality
 from .assets import verify
+from .builds import build
 from .report import render
 from .scenarios import CALIBRATION, SCENARIOS, Scenario
 from .statistics import paired, summary, verdict
 from .storage import (
     BENCHMARKS,
     FOUNDATION,
-    ROOT,
     command,
     digest,
     harness_digest,
     read_json,
     write_json,
 )
-
-
-def build(revision: str, destination: Path, invoke) -> tuple[Path, str]:
-    sha = command(
-        ["git", "rev-parse", "--verify", revision + "^{commit}"], cwd=ROOT
-    ).strip()
-    cached = destination / "build.json"
-    if cached.exists():
-        record = read_json(cached)
-        binary = destination / "target/release/visiongrep"
-        if (
-            record["commit"] == sha
-            and binary.is_file()
-            and digest(binary) == record["sha256"]
-        ):
-            return binary, sha
-        raise ValueError(f"cached build is corrupt: {destination}")
-    destination.mkdir(parents=True, exist_ok=True)
-    archive = destination / "source.tar"
-    command(["git", "archive", "--format=tar", "--output", str(archive), sha], cwd=ROOT)
-    with tarfile.open(archive) as source:
-        source.extractall(destination, filter="data")
-    archive.unlink()
-    env = os.environ.copy()
-    for key in list(env):
-        if key.startswith(("CARGO_PROFILE_", "ORT_")) or key in (
-            "RUSTFLAGS",
-            "CARGO_ENCODED_RUSTFLAGS",
-            "RUSTC_WRAPPER",
-            "RUSTC_WORKSPACE_WRAPPER",
-        ):
-            del env[key]
-    env["VISIONGREP_BUILD_COMMIT"] = sha
-    env["CARGO_TARGET_DIR"] = str(destination / "target")
-    invoke(["cargo", "build", "--release", "--locked"], cwd=destination, env=env)
-    binary = destination / "target/release/visiongrep"
-    write_json(cached, {"commit": sha, "sha256": digest(binary)})
-    return binary, sha
 
 
 def environment(profile: dict) -> dict:
@@ -286,7 +247,34 @@ class Run:
             raise ValueError("local-quick is the MacBook profile")
         self.progress(stage="verifying-inputs")
         verify(cache, corpus)
-        self.report["contract"] = contract(config, self.profile, corpus)
+        self.progress(stage="building")
+        build_cache = cache / "builds"
+        commits = {"foundation": FOUNDATION}
+        if config["mode"] != "record":
+            commits["candidate"] = config["candidate"]
+        binaries, identities, settings = {}, {}, {}
+        for role, revision in commits.items():
+            source = None
+            if config.get("sources"):
+                source = Path(config["sources"][role])
+                if config["source_commits"][role] != revision:
+                    raise ValueError("source bundle commit identity differs")
+            binaries[role], identities[role], settings[role] = build(
+                revision, build_cache, self.invoke, source=source
+            )
+        self.report["binaries"] = {
+            key: {
+                "commit": identities[key],
+                "sha256": digest(path),
+                "build_environment": settings[key],
+            }
+            for key, path in binaries.items()
+        }
+        if any(value != settings["foundation"] for value in settings.values()):
+            raise ValueError("candidate build environment differs from foundation")
+        self.report["contract"] = contract(config, self.profile, corpus) | {
+            "build_environment": settings["foundation"]
+        }
         baseline = (
             read_json(Path(config["baseline"])) if config.get("baseline") else None
         )
@@ -299,30 +287,6 @@ class Run:
                 raise ValueError(
                     "foundation measurement contract differs; recalibration is required"
                 )
-        self.progress(stage="building")
-        if config.get("binaries"):
-            binaries = {
-                key: Path(value["path"]) for key, value in config["binaries"].items()
-            }
-            identities = {
-                key: value["sha"] for key, value in config["binaries"].items()
-            }
-        else:
-            build_key = (
-                platform.system() + "-" + platform.release() + "-" + platform.machine()
-            )
-            build_cache = cache / "builds" / build_key
-            foundation, sha = build(FOUNDATION, build_cache / FOUNDATION, self.invoke)
-            binaries, identities = {"foundation": foundation}, {"foundation": sha}
-            if config["mode"] != "record":
-                candidate, sha = build(
-                    config["candidate"], build_cache / config["candidate"], self.invoke
-                )
-                binaries["candidate"], identities["candidate"] = candidate, sha
-        self.report["binaries"] = {
-            key: {"commit": identities[key], "sha256": digest(path)}
-            for key, path in binaries.items()
-        }
         if identities["foundation"] != FOUNDATION:
             raise ValueError("wrong foundation binary identity")
         if config["mode"] == "validate" and identities["candidate"] != FOUNDATION:
@@ -345,6 +309,10 @@ class Run:
                     values.append(scenario.sample(sample))
                     self.report["calibration"][name] = values
                     self.save()
+                    if not values[-1]["behavior"]["passed"]:
+                        raise ValueError(
+                            f"foundation behavior failed during calibration: {name}: {values[-1]['behavior']['reasons']}"
+                        )
             finally:
                 scenario.cleanup()
                 self.discard_inputs(scenario)
@@ -392,6 +360,16 @@ class Run:
                                 "binary timing metadata disagrees with build identity"
                             )
                         samples[key].append(result)
+                        self.save()
+                    if "candidate" in instances:
+                        samples["candidate"][-1]["behavior_comparison"] = (
+                            behavior.compare(
+                                samples["foundation"][-1],
+                                samples["candidate"][-1],
+                                instances["foundation"].index,
+                                instances["candidate"].index,
+                            )
+                        )
                         self.save()
             finally:
                 for instance in instances.values():
@@ -449,9 +427,37 @@ class Run:
         config = self.config
         self.report["summaries"] = {}
         self.report["resource_comparisons"] = {}
+        behavior_failures = []
         for name, by_binary in self.report["samples"].items():
             self.report["summaries"][name] = {}
             for key, observations in by_binary.items():
+                for number, row in enumerate(observations):
+                    checks = [
+                        row.get(
+                            "behavior",
+                            {
+                                "passed": False,
+                                "reasons": ["missing scenario behavior check"],
+                            },
+                        )
+                    ]
+                    if key == "candidate":
+                        checks.append(
+                            row.get(
+                                "behavior_comparison",
+                                {
+                                    "passed": False,
+                                    "reasons": ["missing paired behavior check"],
+                                },
+                            )
+                        )
+                    for check in checks:
+                        if not check["passed"]:
+                            behavior_failures.extend(
+                                f"{name}/{key}/{number}: {reason}"
+                                for reason in check.get("reasons")
+                                or ["scenario behavior check failed"]
+                            )
                 fields = (
                     "wall_ms",
                     "peak_rss_bytes",
@@ -527,17 +533,24 @@ class Run:
         else:
             result, reasons = verdict(
                 self.report["comparisons"],
-                self.report.get("quality_comparison", {}).get("passed", False),
+                self.report.get("quality_comparison", {}).get(
+                    "passed", not self.profile["quality"]
+                ),
                 True,
                 required_scenarios=SCENARIOS,
             )
-            if self.profile["name"] != "cloud-standard":
-                result, reasons = (
-                    "inconclusive",
-                    [
-                        "screening profile; qualification requires the complete cloud-standard suite"
-                    ],
+            resource_failures = [
+                "memory/index regression: " + name
+                for name, item in self.report["resource_comparisons"].items()
+                if item["interval"][1] < -0.05
+            ]
+            if resource_failures:
+                reasons = (
+                    resource_failures
+                    if result == "qualifies"
+                    else reasons + resource_failures
                 )
+                result = "does_not_qualify"
             elif result == "qualifies":
                 required_resources = {
                     name + ":" + field
@@ -548,11 +561,6 @@ class Run:
                 missing_resources = sorted(
                     required_resources - self.report["resource_comparisons"].keys()
                 )
-                regressions = [
-                    name
-                    for name, item in self.report["resource_comparisons"].items()
-                    if item["interval"][1] < -0.05
-                ]
                 uncertain = [
                     name
                     for name, item in self.report["resource_comparisons"].items()
@@ -565,11 +573,6 @@ class Run:
                             "missing resource check: " + name
                             for name in missing_resources
                         ],
-                    )
-                elif regressions:
-                    result, reasons = (
-                        "does_not_qualify",
-                        ["memory/index regression: " + name for name in regressions],
                     )
                 elif uncertain:
                     result, reasons = (
@@ -584,6 +587,36 @@ class Run:
                         "quality, behavior, memory, and index-size checks passed"
                     )
             self.report.update(verdict=result, reasons=reasons)
+            if self.profile["name"] != "cloud-standard" and result not in (
+                "does_not_qualify",
+                "invalid",
+            ):
+                self.report.update(
+                    verdict="inconclusive",
+                    reasons=reasons
+                    + [
+                        "screening profile; qualification requires the complete cloud-standard suite"
+                    ],
+                )
+        self.report["behavior_comparison"] = {
+            "passed": not behavior_failures,
+            "reasons": behavior_failures,
+        }
+        if behavior_failures:
+            existing_failures = (
+                self.report["reasons"]
+                if self.report["verdict"]
+                in ("does_not_qualify", "invalid", "validation_failed")
+                else []
+            )
+            self.report.update(
+                verdict={
+                    "record": "invalid",
+                    "validate": "validation_failed",
+                    "compare": "does_not_qualify",
+                }[config["mode"]],
+                reasons=existing_failures + behavior_failures,
+            )
 
 
 def worker(config_path: Path) -> str:
