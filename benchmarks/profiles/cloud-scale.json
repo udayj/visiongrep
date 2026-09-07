@@ -1,0 +1,16 @@
+{
+  "name": "cloud-scale",
+  "samples": 3,
+  "corpus_size": 10000,
+  "cloud": true,
+  "quality": false,
+  "scenarios": [
+    "index_absent",
+    "novel_text",
+    "cached_text",
+    "indexed_image",
+    "modified_1pct",
+    "deleted_1pct",
+    "renamed_1pct"
+  ]
+}
