@@ -16,6 +16,36 @@ from harness.statistics import paired, summary, verdict
 from harness.storage import BENCHMARKS, read_json
 from harness.scenarios import SCENARIOS, Scenario
 from harness.runner import Run
+from bench import configuration, parser
+
+
+class ValidationConfiguration(unittest.TestCase):
+    def test_short_validation_does_not_change_comparison_defaults(self):
+        args = parser().parse_args(
+            ["plan", "--mode", "validate", "--validation-samples", "3"]
+        )
+        profile = configuration(args)["profile"]
+        self.assertEqual(profile["samples"], 3)
+        self.assertEqual(profile["calibration_batches"], 1)
+        self.assertTrue(profile["quality"])
+        standard = configuration(
+            parser().parse_args(["plan", "--profile", "cloud-standard"])
+        )["profile"]
+        self.assertEqual(standard["samples"], 21)
+        self.assertEqual(standard.get("calibration_batches", 3), 3)
+        self.assertEqual(set(standard["scenarios"]), set(SCENARIOS))
+
+    def test_validation_override_cannot_weaken_comparison_or_reference(self):
+        for mode in ("compare", "record"):
+            with (
+                self.subTest(mode=mode),
+                self.assertRaisesRegex(ValueError, "requires --mode validate"),
+            ):
+                configuration(
+                    parser().parse_args(
+                        ["plan", "--mode", mode, "--validation-samples", "3"]
+                    )
+                )
 
 
 class ScenarioState(unittest.TestCase):

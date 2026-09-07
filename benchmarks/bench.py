@@ -47,6 +47,12 @@ def parser():
         run.add_argument(
             "--mode", choices=("compare", "validate", "record"), default="compare"
         )
+        run.add_argument(
+            "--validation-samples",
+            type=int,
+            choices=(3, 21),
+            help="validation only: paired samples per scenario; 3 also shortens calibration",
+        )
         run.add_argument("--candidate", default="HEAD")
         run.add_argument("--baseline", type=Path)
         run.add_argument("--cache", type=Path, default=DEFAULT_HOME / "cache")
@@ -76,6 +82,11 @@ def parser():
 
 def configuration(args) -> dict:
     profile = read_json(BENCHMARKS / "profiles" / (args.profile + ".json"))
+    if args.validation_samples is not None:
+        if args.mode != "validate":
+            raise ValueError("--validation-samples requires --mode validate")
+        profile["samples"] = args.validation_samples
+        profile["calibration_batches"] = 1 if args.validation_samples == 3 else 3
     if args.max_hours <= 0 or args.max_hours > 24 or args.budget_usd <= 0:
         raise ValueError("runtime must be in (0,24] hours and budget must be positive")
     cache = outside_repository(args.cache)

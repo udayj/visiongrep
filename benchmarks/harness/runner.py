@@ -293,6 +293,7 @@ class Run:
             raise ValueError("validation must compare foundation against itself")
         self.progress(stage="calibrating")
         calibration_corpus = corpus | {"images": corpus["images"][:500]}
+        calibration_samples = 3 * self.profile.get("calibration_batches", 3)
         for name in CALIBRATION:
             scenario = Scenario(
                 self.directory / "calibration" / name,
@@ -304,8 +305,10 @@ class Run:
             )
             values = []
             try:
-                for sample in range(9):
-                    self.progress(scenario=name, sample=sample, total_samples=9)
+                for sample in range(calibration_samples):
+                    self.progress(
+                        scenario=name, sample=sample, total_samples=calibration_samples
+                    )
                     values.append(scenario.sample(sample))
                     self.report["calibration"][name] = values
                     self.save()
@@ -318,9 +321,13 @@ class Run:
                 self.discard_inputs(scenario)
             medians = [
                 summary([x["wall_ms"] for x in values[i : i + 3]])["median"]
-                for i in (0, 3, 6)
+                for i in range(0, calibration_samples, 3)
             ]
-            stable = summary(medians)["cv"] <= 0.10
+            # A single batch cannot estimate between-batch drift; check its raw spread.
+            stability_values = (
+                [x["wall_ms"] for x in values] if len(medians) == 1 else medians
+            )
+            stable = summary(stability_values)["cv"] <= 0.10
             if baseline:
                 lo, hi = baseline["calibration_bounds"][name]
                 stable &= all(lo <= value <= hi for value in medians)

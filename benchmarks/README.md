@@ -20,8 +20,8 @@ resumes from per-download receipts without re-fetching completed images.
 ```sh
 python3 benchmarks/bench.py prepare --corpus 500
 # Optionally add --import-models /path/to/existing/visiongrep/models
-python3 benchmarks/bench.py plan --mode validate
-python3 benchmarks/bench.py run --mode validate --detach
+python3 benchmarks/bench.py plan --mode validate --validation-samples 3
+python3 benchmarks/bench.py run --mode validate --validation-samples 3 --detach
 python3 benchmarks/bench.py status /absolute/path/to/run
 python3 benchmarks/bench.py logs /absolute/path/to/run
 python3 benchmarks/bench.py report /absolute/path/to/run
@@ -30,6 +30,12 @@ python3 benchmarks/bench.py report /absolute/path/to/run
 The next deliberate step is same-commit validation. It compares the foundation with itself,
 checks quality parity, and flags over 5% timing drift. It is an operational rehearsal, not
 proof of statistical equivalence. No foundation timings are recorded by installation.
+For a quick rehearsal, `--validation-samples 3` uses three pairs per profile scenario and
+one three-sample calibration batch per calibration scenario. Quality and behavior checks
+remain enabled. The short calibration checks variation within its batch; it cannot measure
+variation between batches. This option is rejected for comparison and foundation recording.
+Omit it to use the profile defaults, or use `--validation-samples 21` for longer validation.
+Standard cloud candidate comparisons always retain 21 pairs and three calibration batches.
 
 After validation, execute `--mode record` in at least three separate sessions. Cloud records
 must come from three fresh instances. Aggregate them and compare candidates:
