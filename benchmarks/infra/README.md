@@ -18,6 +18,19 @@ Scope permissions to this deployment.
 
 ## Pinned machine image
 
+`build-image.sh` is the EC2 user-data script for the initial image. It pins and verifies
+the AWS CLI and rustup installers, installs the repository's Rust toolchain, checks tools
+as `bench`, and records installed package versions. Run it only on a disposable Ubuntu
+24.04 x86_64 builder. Supply `BENCH_AMI_REPORT_URI` under the reports bucket's `runs/`
+prefix. It uploads `ready.json` only after successful preparation, then shuts down.
+
+The builder must use instance-initiated shutdown behavior `stop` and a separate AWS
+Scheduler termination deadline of 60 minutes. The script limits installation to 35
+minutes and schedules local shutdown at 45 minutes. Require both `ready.json` and a
+stopped instance before creating the image. Once the image is available, terminate the
+builder and remove its schedule. Keep the AMI and snapshot IDs in the setup record;
+snapshot storage continues to incur charges until explicitly deleted.
+
 Bake an Ubuntu 24.04 x86_64 AMI once with Python 3.12.x, AWS CLI v2 (including conditional
 S3 writes), Rust 1.98.1, a native compiler/linker, pkg-config, OpenSSL development files,
 CA certificates, curl, systemd, runuser, and an unprivileged user named `bench`.
