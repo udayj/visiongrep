@@ -13,14 +13,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness import cloud, quality
 from harness.statistics import paired, summary, verdict
-from harness.storage import BENCHMARKS, read_json
+from harness.storage import BENCHMARKS, FOUNDATION, read_json
 from harness.scenarios import SCENARIOS, Scenario
 from harness.runner import Run
 from bench import configuration, parser
 
 
 class ValidationConfiguration(unittest.TestCase):
-    def test_short_validation_does_not_change_comparison_defaults(self):
+    # Testing profile options must not depend on tags in the developer/CI checkout.
+    @patch("bench.command", return_value=FOUNDATION)
+    def test_short_validation_does_not_change_comparison_defaults(self, git_command):
         args = parser().parse_args(
             ["plan", "--mode", "validate", "--validation-samples", "3"]
         )
@@ -34,6 +36,13 @@ class ValidationConfiguration(unittest.TestCase):
         self.assertEqual(standard["samples"], 21)
         self.assertEqual(standard.get("calibration_batches", 3), 3)
         self.assertEqual(set(standard["scenarios"]), set(SCENARIOS))
+
+    def test_moved_foundation_tag_is_rejected(self):
+        with (
+            patch("bench.command", side_effect=[FOUNDATION, "0" * 40]),
+            self.assertRaisesRegex(ValueError, "foundation tag moved"),
+        ):
+            configuration(parser().parse_args(["plan", "--mode", "validate"]))
 
     def test_validation_override_cannot_weaken_comparison_or_reference(self):
         for mode in ("compare", "record"):
