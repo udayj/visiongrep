@@ -291,15 +291,19 @@ class Run:
             raise ValueError("wrong foundation binary identity")
         if config["mode"] == "validate" and identities["candidate"] != FOUNDATION:
             raise ValueError("validation must compare foundation against itself")
+        if config["mode"] != "record":
+            self.calibrate(binaries["foundation"], cache, corpus, baseline)
+        self.measure(binaries, identities, cache, corpus)
+
+    def calibrate(self, binary: Path, cache: Path, corpus: dict, baseline):
         self.progress(stage="calibrating")
-        calibration_corpus = corpus | {"images": corpus["images"][:500]}
         calibration_samples = 3 * self.profile.get("calibration_batches", 3)
-        for name in CALIBRATION:
+        for name in calibration_scenarios(self.profile):
             scenario = Scenario(
                 self.directory / "calibration" / name,
-                binaries["foundation"],
+                binary,
                 cache,
-                calibration_corpus,
+                corpus,
                 name,
                 self.invoke,
             )
@@ -335,6 +339,8 @@ class Run:
                 raise ValueError(
                     f"foundation calibration failed for {name}; retain run, investigate drift"
                 )
+
+    def measure(self, binaries: dict, identities: dict, cache: Path, corpus: dict):
         for name in self.profile["scenarios"]:
             self.progress(stage="measuring", scenario=name)
             instances = {}
@@ -639,6 +645,13 @@ def worker(config_path: Path) -> str:
         return Run(config).execute()
 
 
+def calibration_scenarios(profile: dict) -> tuple[str, ...]:
+    names = tuple(name for name in CALIBRATION if name in profile["scenarios"])
+    if not names:
+        raise ValueError("profile has no scenarios for reference calibration")
+    return names
+
+
 def foundation(reports: list[Path], destination: Path):
     if destination.exists():
         raise ValueError("foundation files are immutable; choose a new destination")
@@ -658,14 +671,21 @@ def foundation(reports: list[Path], destination: Path):
     ):
         raise ValueError("cloud foundation requires at least three different instances")
     bounds = {}
-    for name in CALIBRATION:
-        values = [
-            summary([v["wall_ms"] for v in row["calibration"][name][i : i + 3]])[
-                "median"
-            ]
-            for row in records
-            for i in (0, 3, 6)
-        ]
+    for name in calibration_scenarios(first["profile"]):
+        values = []
+        for row in records:
+            observations = row["samples"].get(name, {}).get("foundation", [])
+            expected = first["profile"]["samples"]
+            if len(observations) != expected or expected < 3:
+                raise ValueError(f"incomplete foundation measurements for {name}")
+            times = [observation["wall_ms"] for observation in observations]
+            if summary(times)["cv"] > 0.10:
+                raise ValueError(f"foundation variation too large for {name}")
+            # Match the comparison precheck's three-sample statistic. Remainders
+            # still participate in the full-session stability check above.
+            values.extend(
+                summary(times[i : i + 3])["median"] for i in range(0, len(times) - 2, 3)
+            )
         info = summary(values)
         radius = max(info["mad"] * 1.4826 * 3, info["median"] * 0.03)
         if radius > info["median"] * 0.15 or info["cv"] > 0.10:

@@ -38,7 +38,11 @@ Omit it to use the profile defaults, or use `--validation-samples 21` for longer
 Standard cloud candidate comparisons always retain 21 pairs and three calibration batches.
 
 After validation, execute `--mode record` in at least three separate sessions. Cloud records
-must come from three fresh instances. Aggregate them and compare candidates:
+must come from three fresh instances. Merge the harness before recording these references;
+keep the application tag `benchmark-foundation-v1` unchanged. Recording measures only the
+foundation binary, with the profile's normal sample count and one quality pass when enabled.
+It skips the separate calibration precheck and derives reference bounds from its recorded
+scenario samples. Aggregate the successful sessions and compare candidates:
 
 ```sh
 python3 benchmarks/bench.py foundation /path/run1 /path/run2 /path/run3 --output /path/foundation.json
@@ -66,11 +70,20 @@ invalidates the old measurement contract and requires calibration.
 | cloud-standard | 500 | 21 | All 14 timing subcases, quality |
 | cloud-scale | 10,000 | 3 | Indexing, queries, modifications, deletions, renames |
 
-Before comparisons, three batches of three foundation samples measure novel text, cached
-text, and full embedding on the first 500 images, including for the scale profile. Historical
-bounds use median +/- max(3 scaled MAD, 3% of median). Excessive spread refuses calibration;
-all new batch medians must fit the bounds. Reference CV over 10% invalidates a run. These
-starting tolerances must be evaluated during validation, not loosened to pass a candidate.
+Before comparisons, three batches of three foundation samples measure novel and cached
+text, plus no-cache embedding when that scenario is in the profile (cloud-standard).
+Prechecks use the profile's full corpus: 500 images for local/standard, 10,000 for scale,
+so their measurements match the recorded reference. Scale prechecks therefore also need
+to prepare indexes for 10,000 images.
+
+Foundation recording has no separate calibration invocations. Aggregation groups each
+reference scenario's measurements into consecutive, non-overlapping triples: seven batch
+medians from 21 samples, or one from the quick/scale profiles' five/three samples. Any final
+one or two samples still participate in the full-session stability check, but cannot form a
+three-sample batch. Bounds use these batch medians across at least three sessions, with
+median +/- max(3 scaled MAD, 3% of median). Excessive spread or outlying batch medians
+refuse the foundation. All new comparison batch medians must fit its bounds. Reference CV
+over 10% invalidates a run. These starting tolerances must not be loosened to pass a candidate.
 
 Samples alternate F/C and C/F. Comparisons use paired median ratios and deterministic
 bootstrap intervals with Bonferroni-adjusted alpha across timing scenarios. Fixed budgets
