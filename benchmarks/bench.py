@@ -45,7 +45,7 @@ def parser():
             default="local-quick",
         )
         run.add_argument(
-            "--mode", choices=("compare", "validate", "record"), default="compare"
+            "--mode", choices=("compare", "validate", "record", "diagnose"), default="compare"
         )
         run.add_argument(
             "--validation-samples",
@@ -62,7 +62,12 @@ def parser():
         run.add_argument(
             "--cloud", type=Path, help="pinned EC2 settings; launches only with run"
         )
+        run.add_argument(
+            "--cloud-slot", type=int, choices=(1, 2, 3), default=1,
+            help="independent cloud launch slot; budgets apply to each run",
+        )
         run.add_argument("--detach", action="store_true")
+        run.add_argument("--wait", action="store_true", help="cloud only: wait for termination and collect using this authenticated session")
     worker = sub.add_parser("worker", help=argparse.SUPPRESS)
     worker.add_argument("--config", required=True, type=Path)
     aggregate = sub.add_parser(
@@ -74,6 +79,7 @@ def parser():
         "cloud-reconcile", help="recover an expired interrupted cloud launch"
     )
     reconcile.add_argument("--cloud", required=True, type=Path)
+    reconcile.add_argument("--cloud-slot", type=int, choices=(1, 2, 3), default=1)
     for action in ("status", "logs", "cancel", "report", "collect"):
         control = sub.add_parser(action)
         control.add_argument("run", type=Path)
@@ -81,7 +87,21 @@ def parser():
 
 
 def configuration(args) -> dict:
+    if args.cloud_slot != 1 and not args.cloud:
+        raise ValueError("--cloud-slot requires --cloud")
+    if args.wait and (not args.cloud or args.detach):
+        raise ValueError("--wait requires --cloud and cannot be combined with --detach")
     profile = read_json(BENCHMARKS / "profiles" / (args.profile + ".json"))
+    if args.mode == "diagnose":
+        if args.profile != "cloud-standard" or not args.cloud or args.baseline:
+            raise ValueError("diagnose requires cloud-standard and --cloud, without --baseline")
+        profile = profile | {
+            "name": "sqlite-diagnostic",
+            "samples": 100,
+            "quality": False,
+            "scenarios": ["deleted_1pct", "modified_query_image", "modified_1pct", "renamed_1pct"],
+            "batches": ["untraced", "strace"],
+        }
     if args.validation_samples is not None:
         if args.mode != "validate":
             raise ValueError("--validation-samples requires --mode validate")
@@ -103,7 +123,7 @@ def configuration(args) -> dict:
         raise ValueError(
             "foundation tag moved; refusing to change the reference silently"
         )
-    if args.mode in ("record", "validate"):
+    if args.mode in ("record", "validate", "diagnose"):
         sha = FOUNDATION
     hourly = 0.26 if args.cloud else 0
     seconds = int(
@@ -112,7 +132,10 @@ def configuration(args) -> dict:
             args.budget_usd / hourly * 3600 if hourly else float("inf"),
         )
     )
+    if args.mode == "diagnose":
+        seconds = min(seconds, 3600)
     return {
+        "cloud_slot": args.cloud_slot,
         "schema_version": 1,
         "directory": str(
             runs / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
@@ -172,6 +195,19 @@ def main():
         if args.cloud:
             handle = cloud.launch(config, args.cloud)
             print(json.dumps(handle, indent=2))
+            print(directory, flush=True)
+            if args.wait:
+                while True:
+                    state = cloud.status(directory)
+                    print(json.dumps(state), flush=True)
+                    if state["instance_state"] == "terminated":
+                        break
+                    time.sleep(20)
+                cloud.collect(directory)
+                result = read_json(directory / "remote/report.json")["verdict"]
+                print(f"Collected: {directory / 'remote'} ({result})", flush=True)
+                if result in ("invalid", "cancelled", "validation_failed", "diagnostic_incomplete"):
+                    raise SystemExit(2)
         elif args.detach:
             with (directory / "worker.log").open("w") as log:
                 subprocess.Popen(
@@ -201,7 +237,7 @@ def main():
     elif args.action == "foundation":
         runner.foundation(args.runs, outside_repository(args.output))
     elif args.action == "cloud-reconcile":
-        cloud.reconcile(args.cloud)
+        cloud.reconcile(args.cloud, slot=args.cloud_slot)
     else:
         directory = args.run.expanduser().resolve()
         if args.action == "status":

@@ -250,7 +250,7 @@ class Run:
         self.progress(stage="building")
         build_cache = cache / "builds"
         commits = {"foundation": FOUNDATION}
-        if config["mode"] != "record":
+        if config["mode"] not in ("record", "diagnose"):
             commits["candidate"] = config["candidate"]
         binaries, identities, settings = {}, {}, {}
         for role, revision in commits.items():
@@ -289,6 +289,11 @@ class Run:
                 )
         if identities["foundation"] != FOUNDATION:
             raise ValueError("wrong foundation binary identity")
+        if config["mode"] == "diagnose":
+            from .diagnostics import measure
+
+            measure(self, binaries["foundation"], cache, corpus)
+            return
         if config["mode"] == "validate" and identities["candidate"] != FOUNDATION:
             raise ValueError("validation must compare foundation against itself")
         if config["mode"] != "record":

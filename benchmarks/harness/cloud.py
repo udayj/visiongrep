@@ -49,6 +49,13 @@ def validate_settings(settings):
         raise ValueError("pin an AMI ID; aliases/latest images are not accepted")
 
 
+def lock_key(slot: int = 1) -> str:
+    if slot not in (1, 2, 3):
+        raise ValueError("cloud slot must be 1, 2, or 3")
+    # Slot one retains compatibility with existing handles and launch leases.
+    return "control/active.json" if slot == 1 else f"control/active-{slot}.json"
+
+
 def bootstrap(bucket: str, prefix: str, region: str, ami: str, seconds: int) -> str:
     # Python/Rust/AWS CLI/native build dependencies must already exist in the pinned AMI.
     remote = f"s3://{bucket}/{prefix}"
@@ -112,7 +119,9 @@ def launch(config: dict, settings_path: Path) -> dict:
         raise ValueError("cloud launch requires a cloud profile")
     if config["hourly_budget_usd"] <= 0:
         raise ValueError("cloud run must include a positive hourly planning rate")
-    # Atomic lock prevents concurrent launchers. Only explicit cancellation/reconciliation clears it.
+    # Each slot owns an atomic lease and a separate instance. Never steal a busy slot.
+    slot = config.get("cloud_slot", 1)
+    key = lock_key(slot)
     lock_path = directory / "cloud-lock.json"
     write_json(
         lock_path,
@@ -129,7 +138,7 @@ def launch(config: dict, settings_path: Path) -> dict:
         "--bucket",
         bucket,
         "--key",
-        "control/active.json",
+        key,
         "--body",
         str(lock_path),
         "--if-none-match",
@@ -149,7 +158,7 @@ def launch(config: dict, settings_path: Path) -> dict:
             if config.get("baseline"):
                 shutil.copyfile(config["baseline"], staging / "baseline.json")
             commits = {"foundation": FOUNDATION}
-            if config["mode"] != "record":
+            if config["mode"] not in ("record", "diagnose"):
                 commits["candidate"] = config["candidate"]
             for role, sha in commits.items():
                 archive = staging / (role + ".tar")
@@ -198,6 +207,15 @@ def launch(config: dict, settings_path: Path) -> dict:
                     timeout=600,
                 )
         boot = bootstrap(bucket, prefix, region, settings["ami"], config["max_seconds"])
+        if config["mode"] == "diagnose":
+            # Diagnostic-only tools are installed before building or measuring, with a bound.
+            boot = boot.replace(
+                "chown -R bench:bench /opt/visiongrep-bench",
+                "timeout --kill-after=10s 180s bash -c 'apt-get update && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends strace'\n"
+                "sysctl -w kernel.sched_schedstats=1\n"
+                "chown -R bench:bench /opt/visiongrep-bench",
+            )
         boot = boot.replace(
             "export BENCH_INSTANCE_ID=$(cat instance-id)",
             """TOKEN=$(curl --fail -sS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)
@@ -221,7 +239,7 @@ export BENCH_INSTANCE_ID=$(curl --fail -sS -H "X-aws-ec2-metadata-token: $TOKEN"
             "--bucket",
             bucket,
             "--key",
-            "control/active.json",
+            key,
             "--body",
             str(lock_path),
             "--if-match",
@@ -319,6 +337,7 @@ export BENCH_INSTANCE_ID=$(curl --fail -sS -H "X-aws-ec2-metadata-token: $TOKEN"
             ),
         )
         handle = {
+            "cloud_slot": slot,
             "region": region,
             "bucket": bucket,
             "prefix": prefix,
@@ -338,6 +357,7 @@ export BENCH_INSTANCE_ID=$(curl --fail -sS -H "X-aws-ec2-metadata-token: $TOKEN"
             directory / "launch-failed.json",
             {
                 "run_id": run_id,
+                "cloud_slot": slot,
                 "region": region,
                 "bucket": bucket,
                 "instance_id": instance_id,
@@ -415,14 +435,14 @@ def collect(directory: Path, cancel=False):
     )
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "lock.json"
-        aws(
+        lease = aws(
             region,
             "s3api",
             "get-object",
             "--bucket",
             handle["bucket"],
             "--key",
-            "control/active.json",
+            lock_key(handle.get("cloud_slot", 1)),
             str(path),
         )
         if read_json(path)["run_id"] != handle["run_id"]:
@@ -434,25 +454,28 @@ def collect(directory: Path, cancel=False):
             "--bucket",
             handle["bucket"],
             "--key",
-            "control/active.json",
+            lock_key(handle.get("cloud_slot", 1)),
+            "--if-match",
+            lease["ETag"],
         )
 
 
-def reconcile(settings_path: Path):
+def reconcile(settings_path: Path, *, slot: int = 1):
     """Recover a launch interrupted before its local instance handle was saved."""
     settings = read_json(settings_path)
     validate_settings(settings)
     region, bucket = settings["region"], settings["bucket"]
+    key = lock_key(slot)
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "lock.json"
-        aws(
+        lease = aws(
             region,
             "s3api",
             "get-object",
             "--bucket",
             bucket,
             "--key",
-            "control/active.json",
+            key,
             str(path),
         )
         lock = read_json(path)
@@ -490,5 +513,7 @@ def reconcile(settings_path: Path):
         "--bucket",
         bucket,
         "--key",
-        "control/active.json",
+        key,
+        "--if-match",
+        lease["ETag"],
     )
