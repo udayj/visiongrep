@@ -1,5 +1,30 @@
 # SQLite latency diagnostic
 
+## Follow-up: flush setup writes before measuring
+
+The first diagnostic (`20260908-152528-fbac348f`) completed all 800 samples.
+The traced deletion outlier spent 407 ms of its 410 ms reconciliation in four
+`fsync` calls. Telemetry showed journal/writeback waits and a draining dirty-memory
+backlog of about 600 MiB. No SQLite lock retries explained the traced outliers.
+
+The follow-up keeps the same fixed batches, application commit and instance settings.
+Cloud invocations now call GNU `sync -f` on the scenario filesystem after setup,
+status/report uploads and invocation-file creation, outside the process timer.
+They then require at least 250 ms with no observed device I/O, no writeback and
+at most 16 MiB globally dirty memory. The 30-second total settling deadline includes
+the flush. Failure invalidates the run; samples are never selectively removed.
+`storage_quiescence` records the policy, flush/settling duration and before/after
+counters in each observation. A fresh helper after settling isolates CLI resource
+accounting from the sync subprocess. This policy changes the cloud measurement
+contract and does not alter local measurements or SQLite durability settings.
+
+Success criteria: all 800 samples and behavior checks complete, no database phase
+above 100 ms (the preselected diagnostic threshold for the original stalls), and
+the traced sync durations and telemetry no longer show the original writeback
+stalls. Report every maximum and all samples even if these criteria fail. A clean
+follow-up on one new instance supports the fix but cannot prove that cloud storage
+will never stall. New foundations still require the normal three-instance protocol.
+
 This branch investigates the isolated database-phase stalls in cloud recording
 `20260908-124933-332db744`. It runs the unchanged application at
 `8b518ed86ff4f29e9c071931c91efa3e5ec31b44`; only the harness is instrumented.

@@ -118,6 +118,8 @@ class Scenario:
             "stdout": str(output / "results.json"),
             "stderr": str(output / "stderr.log"),
         }
+        if self.environment.get("BENCH_AMI"):
+            config["storage_quiescence_path"] = str(self.root)
         write_json(output / "invocation.json", config)
         metrics = json.loads(
             self.invoke(

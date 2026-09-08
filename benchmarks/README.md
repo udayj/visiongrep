@@ -135,6 +135,11 @@ Scenarios: absent index; forced reindex; no-cache; novel/cached text; external i
 repeated; indexed image; modified indexed query image; 1% additions; 1% modifications;
 1% deletions; 1% renames; and read-only corpus with an external index.
 
+Cloud measurements explicitly flush the scenario filesystem and observe a bounded
+quiet interval before launching the timed CLI. Settling evidence is retained per
+observation; failure invalidates the run. This changes the cloud measurement
+contract. See `SQLITE_DIAGNOSTIC.md` for the policy and its validation experiment.
+
 External query images are transient: repeated queries still infer embeddings. Indexed
 query images reuse their stored vector and exclude themselves. Modifications replace pixels
 with a fixed different source image and do not accumulate across repetitions.
