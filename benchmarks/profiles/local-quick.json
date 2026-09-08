@@ -1,6 +1,8 @@
 {
   "name": "local-quick",
-  "samples": 5,
+  "samples": 9,
+  "calibration_batches": 3,
+  "screening_policy": "local-batches-v2",
   "corpus_size": 500,
   "cloud": false,
   "quality": true,

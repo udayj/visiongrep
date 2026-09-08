@@ -31,7 +31,8 @@ The next deliberate step is same-commit validation. It compares the foundation w
 checks quality parity, and flags over 5% timing drift. It is an operational rehearsal, not
 proof of statistical equivalence. No foundation timings are recorded by installation.
 For a quick rehearsal, `--validation-samples 3` uses three pairs per profile scenario and
-one three-sample calibration batch per calibration scenario. Quality and behavior checks
+one three-sample calibration batch per cloud calibration scenario; local calibration
+always retains three batches. Quality and behavior checks
 remain enabled. The short calibration checks variation within its batch; it cannot measure
 variation between batches. This option is rejected for comparison and foundation recording.
 Omit it to use the profile defaults, or use `--validation-samples 21` for longer validation.
@@ -66,7 +67,7 @@ invalidates the old measurement contract and requires calibration.
 
 | Profile | Images | Samples per binary/scenario | Coverage |
 |---|---:|---:|---|
-| local-quick | 500 | 5 | Indexing, text/image queries, modifications, quality |
+| local-quick | 500 | 9 | Indexing, text/image queries, modifications, quality |
 | cloud-standard | 500 | 21 | All 14 timing subcases, quality |
 | cloud-scale | 10,000 | 3 | Indexing, queries, modifications, deletions, renames |
 
@@ -78,12 +79,23 @@ to prepare indexes for 10,000 images.
 
 Foundation recording has no separate calibration invocations. Aggregation groups each
 reference scenario's measurements into consecutive, non-overlapping triples: seven batch
-medians from 21 samples, or one from the quick/scale profiles' five/three samples. Any final
+medians from 21 samples, three from local-quick's nine, or one from cloud-scale's three. Any final
 one or two samples still participate in the full-session stability check, but cannot form a
 three-sample batch. Bounds use these batch medians across at least three sessions, with
 median +/- max(3 scaled MAD, 3% of median). Excessive spread or outlying batch medians
 refuse the foundation. All new comparison batch medians must fit its bounds. Reference CV
-over 10% invalidates a run. These starting tolerances must not be loosened to pass a candidate.
+over 10% invalidates a cloud run. These starting tolerances must not be loosened to pass a candidate.
+
+Local policy `local-batches-v2` keeps these numerical limits and uses a fixed nine-sample
+budget. Timing noise does not abort calibration or subsequent measurement/quality checks:
+the performance conclusion becomes `inconclusive`. Quality, behavior and definite resource
+failures remain failures. Three-pair local validation is only a rehearsal and is inconclusive.
+Choose at least three independent recording sessions in advance and include all of them;
+do not replace noisy sessions until bounds pass. Local aggregation writes an immutable
+schema-2 report: `calibrated` with bounds or `inconclusive` with reasons and batch medians
+but no usable bounds. Only calibrated matching contracts can be compared. Historical
+five-sample sessions require fresh recordings. The global harness digest changes for cloud
+too, requiring fresh contracts despite unchanged cloud policy. See [evidence and limits](LOCAL_SCREENING.md).
 
 Samples alternate F/C and C/F. Comparisons use paired median ratios and deterministic
 bootstrap intervals with Bonferroni-adjusted alpha across timing scenarios. Fixed budgets
@@ -106,7 +118,7 @@ improvement when a candidate qualifies. Missing scenarios or resource checks can
 Definite regressions fail; unresolved checks are inconclusive. Local-quick and cloud-scale
 are screening profiles and cannot qualify a candidate, even with more samples.
 Screening preserves definitive failures and their reasons, including quality, behavior,
-timing, and resource regressions.
+timing (when the local timing screen is stable), and resource regressions.
 
 After each invocation, outside timing, behavior checks require the expected result count
 and eligible image paths, including image-query self-exclusion. Index checks compare

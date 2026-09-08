@@ -1,9 +1,5 @@
 name: Benchmark harness checks
 on:
-  pull_request:
-    paths:
-      - "benchmarks/**"
-      - ".github/workflows/benchmark-harness.yml"
   push:
     branches: [main]
     paths:
