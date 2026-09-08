@@ -62,6 +62,10 @@ def parser():
         run.add_argument(
             "--cloud", type=Path, help="pinned EC2 settings; launches only with run"
         )
+        run.add_argument(
+            "--cloud-slot", type=int, choices=(1, 2, 3), default=1,
+            help="independent cloud launch slot; budgets apply to each run",
+        )
         run.add_argument("--detach", action="store_true")
         run.add_argument("--wait", action="store_true", help="cloud only: wait for termination and collect using this authenticated session")
     worker = sub.add_parser("worker", help=argparse.SUPPRESS)
@@ -75,6 +79,7 @@ def parser():
         "cloud-reconcile", help="recover an expired interrupted cloud launch"
     )
     reconcile.add_argument("--cloud", required=True, type=Path)
+    reconcile.add_argument("--cloud-slot", type=int, choices=(1, 2, 3), default=1)
     for action in ("status", "logs", "cancel", "report", "collect"):
         control = sub.add_parser(action)
         control.add_argument("run", type=Path)
@@ -82,6 +87,8 @@ def parser():
 
 
 def configuration(args) -> dict:
+    if args.cloud_slot != 1 and not args.cloud:
+        raise ValueError("--cloud-slot requires --cloud")
     if args.wait and (not args.cloud or args.detach):
         raise ValueError("--wait requires --cloud and cannot be combined with --detach")
     profile = read_json(BENCHMARKS / "profiles" / (args.profile + ".json"))
@@ -128,6 +135,7 @@ def configuration(args) -> dict:
     if args.mode == "diagnose":
         seconds = min(seconds, 3600)
     return {
+        "cloud_slot": args.cloud_slot,
         "schema_version": 1,
         "directory": str(
             runs / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
@@ -229,7 +237,7 @@ def main():
     elif args.action == "foundation":
         runner.foundation(args.runs, outside_repository(args.output))
     elif args.action == "cloud-reconcile":
-        cloud.reconcile(args.cloud)
+        cloud.reconcile(args.cloud, slot=args.cloud_slot)
     else:
         directory = args.run.expanduser().resolve()
         if args.action == "status":

@@ -58,7 +58,11 @@ retries onto successively favorable hosts.
 `status RUN` reads EC2 state and the latest status upload. During an expensive invocation,
 an old timestamp is not proof of a hung worker. `cancel RUN` requests termination; retry
 `collect RUN` after EC2 reaches terminated. Collection downloads evidence and releases
-the single-run lock. A completed run must be collected before the next launch.
+its slot's lock. Collect a completed run before reusing that slot.
+Use `--cloud-slot 1`, `2`, or `3` for up to three concurrent runs on distinct
+instances and volumes. Slot 1 preserves the legacy lock key. Supply the same slot
+to `cloud-reconcile` for interrupted launches. Budgets and expiry are per run;
+the combined budget is the sum of the active runs' budgets.
 
 Ordinary S3 runs expire after 90 days. Copy important evidence to `foundations/` or `kept/`
 before expiry. Those prefixes and shared `artifacts/` do not expire automatically. Keep

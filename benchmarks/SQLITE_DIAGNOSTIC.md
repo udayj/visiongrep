@@ -1,5 +1,21 @@
 # SQLite latency diagnostic
 
+## Validated result
+
+Follow-up `20260908-164635-0c405b4f` completed all 800 samples and behavior checks
+in 3300.54 seconds. Database phases above 100 ms fell from nine to zero. The
+maximum database phase was 14.611 ms; the maximum of 2000 traced `fsync` calls
+was 8.970 ms. All 800 settling records had zero writeback and in-flight I/O;
+maximum final dirty memory was 5392 KiB. Both instances terminated and their
+artifacts were collected. This supports the setup writeback fix, not a guarantee
+against every future cloud storage stall.
+
+The settling boundary applies to normal cloud measurements. Optional diagnostic
+tooling is retained for reproduction; normal runs do not install strace, enable
+scheduler statistics or collect diagnostic telemetry. Raw evidence remains in the
+out-of-tree run directories. Regular cloud jobs now support three independent
+launch slots; the historical diagnostic used one instance at a time.
+
 ## Follow-up: flush setup writes before measuring
 
 The first diagnostic (`20260908-152528-fbac348f`) completed all 800 samples.
@@ -34,8 +50,7 @@ evidence, and no existing foundation or recording is rewritten.
 ## Fixed protocol
 
 One fresh instance uses the existing pinned AMI, c7a.xlarge, and encrypted 40 GiB
-gp3 root volume with 3000 IOPS and 125 MiB/s. The existing bucket lock serializes
-launches. Local shutdown and the independent AWS termination schedule remain active.
+gp3 root volume with 3000 IOPS and 125 MiB/s. The diagnostic uses the default cloud slot. Local shutdown and the independent AWS termination schedule remain active.
 The runtime ceiling is one hour including setup/builds, using the harness's
 historical $0.26/hour planning rate, not current pricing or an exact billing cap.
 

@@ -33,9 +33,15 @@ def quiet(previous: dict, current: dict) -> bool:
         current["dirty_kib"] <= MAX_DIRTY_KIB
         and current["writeback_kib"] == 0
         and previous["in_flight"] == current["in_flight"] == 0
-        and all(previous[key] == current[key] for key in (
-            "reads_completed", "writes_completed", "sectors_written", "io_ms",
-        ))
+        and all(
+            previous[key] == current[key]
+            for key in (
+                "reads_completed",
+                "writes_completed",
+                "sectors_written",
+                "io_ms",
+            )
+        )
     )
 
 
@@ -49,11 +55,14 @@ def settle(path: Path) -> dict:
     subprocess.run(["sync", "-f", str(path)], check=True, timeout=TIMEOUT_SECONDS)
     flushed = time.monotonic()
     previous = storage_state(device)
+    current = previous
     quiet_since = flushed
     while time.monotonic() - started < TIMEOUT_SECONDS:
         time.sleep(0.05)
         current = storage_state(device)
         now = time.monotonic()
+        if now - started >= TIMEOUT_SECONDS:
+            break
         if not quiet(previous, current):
             quiet_since = now
         elif now - quiet_since >= QUIET_SECONDS:

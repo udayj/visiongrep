@@ -135,10 +135,13 @@ Scenarios: absent index; forced reindex; no-cache; novel/cached text; external i
 repeated; indexed image; modified indexed query image; 1% additions; 1% modifications;
 1% deletions; 1% renames; and read-only corpus with an external index.
 
-Cloud measurements explicitly flush the scenario filesystem and observe a bounded
-quiet interval before launching the timed CLI. Settling evidence is retained per
-observation; failure invalidates the run. This changes the cloud measurement
-contract. See `SQLITE_DIAGNOSTIC.md` for the policy and its validation experiment.
+Cloud measurements explicitly flush the scenario filesystem and require 250 ms
+of observed disk inactivity, zero writeback, and at most 16 MiB dirty memory before
+launching the timed CLI. The 30-second setup deadline includes flushing. Settling
+evidence is retained per observation; failure invalidates the run. This applies
+to normal recording, validation and comparisons as well as diagnostics.
+See `SQLITE_DIAGNOSTIC.md` for the validating experiment. SQLite durability and
+the foundation variation threshold are unchanged.
 
 External query images are transient: repeated queries still infer embeddings. Indexed
 query images reuse their stored vector and exclude themselves. Modifications replace pixels
@@ -195,9 +198,26 @@ tax and cleanup grace are additional. Pilot measurements are needed for duration
 Local reports persist in the run directory. Cloud reports go to private S3 `runs/RUN_ID/`
 and collect under `RUN/remote/`. Config, status, raw observations, JSON, and standalone HTML
 are retained. Cloud jobs survive disconnects and have independent expiry. One run per local
-run root/cloud bucket is permitted. Collect a terminated cloud job to release its lock.
+run root is permitted; do not run simultaneous local measurements on the same Mac.
+Cloud runs use `--cloud-slot 1`, `2`, or `3` (default `1`): each slot permits one
+active run on its own fresh instance and volume. Launch in separate terminals or
+background processes using different slots. Collection releases only that slot
+using a conditional lease deletion. Slot one remains compatible with older handles.
+Budgets and deadlines apply per run: three simultaneous runs can consume three
+times the individual budget. Each instance has its own benchmark directory and
+build cache; shared S3 artifact objects are content-addressed.
+Collect a terminated cloud job to release its lock.
 Use `cancel RUN` to stop work and `cloud-reconcile --cloud SETTINGS` for expired uncertain
-launches. Deadlines/cancellation preserve incomplete reports and cannot pass.
+launches; pass the original `--cloud-slot` when reconciling slots 2 or 3.
+Deadlines/cancellation preserve incomplete reports and cannot pass. `--wait` waits
+for termination and collects automatically in the authenticated launch session.
+
+After this update, record both foundations anew with the final merged harness:
+at least three local sessions sequentially, and at least three cloud sessions on
+distinct fresh instances (slots 1–3 may run concurrently). Complete cloud launches
+before starting local timing so bundle uploads do not compete with measurements
+on the Mac. Preserve older foundations as historical evidence. Never combine
+different contracts or accept diagnostic reports as foundation recordings.
 
 ## Development and history
 

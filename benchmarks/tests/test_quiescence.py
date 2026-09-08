@@ -63,3 +63,12 @@ class StorageQuiescence(unittest.TestCase):
             self.assertRaisesRegex(TimeoutError, "flush timeout"),
         ):
             settle(Path(__file__).parent)
+
+    def test_flush_using_entire_budget_reports_timeout(self):
+        with (
+            patch("harness.quiescence.storage_state", return_value=IDLE),
+            patch("harness.quiescence.subprocess.run"),
+            patch("harness.quiescence.time.monotonic", side_effect=[0, 31, 31]),
+            self.assertRaisesRegex(TimeoutError, "did not settle"),
+        ):
+            settle(Path(__file__).parent)
