@@ -1,153 +1,150 @@
-# Local screening policy v2
+# Local median screening v3
 
-This changes the fixed budget and distinguishes timing uncertainty from failed execution;
-it does not widen tolerances. Local defaults use nine samples per scenario, making three
-complete consecutive triples. Compare/validate calibration also uses three triples per
-calibration scenario. Choose at least three independent recording sessions in advance and
-aggregate all of them. No adaptive retries, discarded outliers, synthetic samples, pooled
-leftovers or replacing sessions until bounds pass.
+Local benchmarking is inexpensive candidate triage before considering cloud runs. Its
+purpose is to reject inappropriate changes and identify plausible gains on this Mac, not
+to prove a five-percent improvement transfers to another machine. Cloud acquisition,
+noise limits, sample budgets and qualification rules are unchanged.
 
-Raw CV and calibration batch CV retain their 10% limits. Aggregation retains median ±
-max(3 × 1.4826 × MAD, 3% × median), the 15% radius guard and the outlying-batch guard.
-These are conservative heuristics, not coverage-guaranteed prediction intervals. Nine
-samples improve batch coverage but do not establish equivalence or reliable tail latency.
-Local runs cannot qualify a candidate.
+## Recording and uncertainty
 
-Timing noise and same-commit timing drift produce `inconclusive` after the fixed measurement
-and quality budget finishes. Both binaries' timing variability is examined. Quality,
-behavior and definite resource failures keep their failure verdicts. Execution errors,
-incomplete samples, missing quality evaluation and incompatible contracts remain blocking.
-Noisy recordings can enter aggregation, where all samples still face the stability checks.
+The budget remains nine samples per scenario per session, grouped into three consecutive,
+non-overlapping triples. Plan at least three independent sessions before observing results;
+include all completed sessions without replacements or adaptive retries. All raw samples,
+including spikes, remain in the original reports and raw CV remains visible.
 
-Local reports/aggregation use schema 2 and profile policy `local-batches-v2`. Inconclusive
-aggregation retains source hashes and batch medians but exposes no bounds; comparison
-rejects it. Old reports are never rewritten. Every retained local recording predates v2
-and requires fresh recording. The global harness digest also changes for cloud, requiring
-fresh recording despite unchanged cloud measurement settings and qualification policy.
+The local calibration statistic is the **median of the three-sample batch medians**.
+For aggregation, pool the batch medians but retain their session membership. Report:
 
-## All retained local evidence
+- This typical-latency estimate and an approximate 95% percentile interval, using 5,000
+  deterministic bootstrap draws that resample sessions, then batches within each session.
+- Relative median uncertainty: the larger distance from the median to either interval
+  endpoint divided by the median. Require at most **10%**.
+- Batch stability: maximum absolute deviation of any batch median from the aggregate
+  median, divided by that median. Require at most **15%**.
+- Per-session medians, every batch median, and raw summary statistics including CV.
 
-`results/local-noise-audit-20260908.json` audits **all 12 local reports** under
-`~/.cache/visiongrep-bench/runs`, including failures. It retains original report SHA-256,
-verdict/reasons, contract, all wall/application-wall/phase samples and the new raw-noise
-diagnostic. The other five directories have cloud configurations. Reproduce read-only:
+The 10% precision budget is a coarse local screening resolution. The 15% guard is now
+applied directly to observed batch displacement, not to a MAD-derived radius that can
+reject otherwise close batches. Raw CV and exceeding a narrow MAD band no longer reject
+a foundation. These are explicit policy choices for coarse triage, not estimates of a
+machine's noise floor. They are not tuned per scenario or candidate, and there is no
+absolute millisecond allowance.
 
-```sh
-python3 benchmarks/audit_local.py ~/.cache/visiongrep-bench/runs > /tmp/local-audit.json
+Aggregation evaluates precision and stability over all sessions for **all five scenarios**.
+It does not require every individual session's interval to pass first: additional sessions
+can improve precision. A sustained shift in a session or batch still blocks calibration.
+Quality/behavior failures, incomplete observations and incompatible contracts remain
+errors. An inconclusive report never exposes usable calibration bounds.
+
+## Candidate triage
+
+Before a comparison, the newly measured foundation must have adequate median precision
+and batch stability. Its median must fall within the historical median interval expanded
+by 10% on each side. Individual precheck batches need not fall within the old narrow MAD
+band. The historical interval is a drift check, not a replacement for contemporaneous
+measurements: candidates are still paired F/C and C/F with newly executed foundation runs.
+
+Timing and resource comparisons retain paired median-ratio bootstrap intervals and their
+existing multiple-scenario adjustment. A candidate is `promising` only if its local
+measurements are stable, correctness checks pass, all local timing/resource comparisons
+exist, their intervals exclude regressions greater than 5%, and at least one local timing
+scenario improves by 5% or more with an interval excluding zero. `promising` is not
+`qualifies`, does not cover unmeasured cloud scenarios, and never launches a cloud run.
+Clear regressions or a confidently negligible gain are `does_not_qualify`; uncertainty
+remains `inconclusive`. The 10% reference precision budget does not mean accepting a
+candidate with a possible 10% paired regression.
+
+With only three sessions and three batches each, bootstrap coverage is not guaranteed.
+Intervals can be optimistic for correlated/nonstationary workloads or identical observed
+batch medians. The batch drift guard is a separate check, not a proof of stationarity.
+One isolated spike can leave the median unchanged; this deliberately targets typical
+latency and does not certify tails or absence of occasional stalls. Raw timings remain
+available for those questions. Cloud confirmation is required for performance claims.
+
+## Compatibility and retained evidence
+
+New local reports and foundations use schema 3 and policy `local-median-v3`. The comparison
+contract is still checked in full. Reanalysis is allowed only for current measurement
+contracts or the known nine-sample v2 harness SHA-256:
+
+```text
+6d323d1709693c70c61aae7f924703faa1e51b0828808aa86fce76434d52b79c
 ```
 
-| Session | Historical verdict | Raw CV above 10% |
-|---|---|---|
-| 20260907-131710-3359d12f | validation_passed | none; three pairs |
-| 20260908-120901-f78f6c5c | invalid | cached_text 12.59% |
-| 20260908-122007-f42d2998 | foundation_recorded | none |
-| 20260908-123051-b9ab938a | foundation_recorded | none |
-| 20260908-123614-7055109c | foundation_recorded | none |
-| 20260908-184338-01efa9fe | invalid | cached_text 10.61% |
-| 20260908-185252-2278cfb6 | foundation_recorded | none |
-| 20260908-185657-6748ea27 | foundation_recorded | none |
-| 20260908-190119-9dd5c719 | foundation_recorded | none |
-| 20260908-190735-9a2190df | foundation_recorded | none |
-| 20260908-214925-9a3f9c5f | invalid | modified_1pct 14.52% |
-| 20260908-215550-4c60b373 | invalid | novel_text 13.42% |
+The v3 change leaves its acquisition code (process timing, resets, warming, sample order,
+builds and quality execution) unchanged. A reanalyzed foundation preserves `source_contract`
+and immutable source report hashes, and emits a current analysis contract with the policy
+and harness digest updated. All remaining contract fields are preserved. This is an
+explicit migration, not a general permission to ignore harness hashes. Unknown v2/v3
+harnesses require fresh recordings; five-sample records cannot supply three full batches.
+All source sessions must have identical contracts. Old foundation files are never edited.
 
-All four historical noise failures remain flagged by the unchanged raw-CV diagnostic.
-Each recording has five samples (one complete triple); the validation has three.
-**All 12 are ineligible under v2.** No missing samples are fabricated and no historical
-session is claimed to pass with nine. This audit cannot estimate v2 false-positive or
-false-negative rates; fresh recordings must validate its empirical behavior. Contracts
-must not be pooled to substitute for independent batches.
-
-The initially selected novel-text medians (203.494, 205.295, 216.844 ms) illustrate MAD's
-instability with just three points. Replacing the last session changes which scenario
-fails: cached medians 9.168, 8.811, 8.368 ms give about 4.6% CV but an 18% robust radius.
-Neither selection becomes a new foundation. More complete batches address the shortage
-of evidence; preserving conservative guards may still produce an inconclusive result.
-
-## Harness interference and limitations
-
-The helper times the CLI subprocess directly using `perf_counter`; the runner's 100 ms
-polling is outside that interval. Setup, seed copies, warm pre-reads, behavior checks and
-report serialization occur outside the measured child. Pre-reads intentionally implement
-warm-cache policy. Reset writes can still cause background I/O, and heartbeat fsync every
-five seconds can overlap a child. Historical local reports have no I/O/heartbeat trace to
-establish causation. No arbitrary sleeps, local sync or measurement-boundary changes are
-justified by this evidence.
-
-Across all eleven record sessions, external minus application wall time has a cached_text
-median of 4.477 ms (range 3.999–6.666), and indexed_image median of 4.469 ms (4.099–5.433).
-These gaps include launch/teardown and timing-file work; they are not pure timer error and
-must not be subtracted. Novel_text's gap reaches 47.674 ms. The last two failed sessions
-also show increased model-session construction: modified_1pct reaches 237.330 ms and
-novel_text 205.906 ms. Thus variation is not confined to external overhead. Worker-summed
-decoding/preprocessing phases cannot be added to reconstruct elapsed wall time.
-
-An absolute-plus-relative allowance was considered but deferred. These samples do not
-isolate a stable measurement-error floor from real launch/application variation. Choosing
-a millisecond allowance to pass cached-text failures would fit thresholds after observing
-the data. Until controlled fresh measurements justify one, v2 retains existing limits and
-labels uncertainty honestly. No performance improvement is claimed.
-
-## Fresh fixed-budget experiment, 2026-09-08
-
-Before publishing the change, three sequential, independent local recording processes
-were run with this command, once per session:
+At policy selection the retained population was 15 local reports: the 12 historical reports in
+`results/local-noise-audit-20260908.json`, plus all three recent v2 sessions. The older
+12 still have only three or five samples and are insufficient; their original verdicts
+and raw CV diagnostics remain intact. All three eligible nine-sample sessions, including
+both inconclusive sessions, are included in v3 reanalysis. No session is selected away.
+Reproduce an audit of the entire directory with:
 
 ```sh
-python3 benchmarks/bench.py run --mode record --profile local-quick --max-hours 1
+python3 benchmarks/audit_local.py ~/.cache/visiongrep-bench/runs > /tmp/local-v3-audit.json
 ```
 
-The budget of three sessions was fixed before starting. No run was replaced or retried.
-All three retained nine samples for every scenario (45 timing samples each), passed all
-scenario behavior checks and completed the 440-query foundation quality evaluation.
+The same three recent sessions that were inconclusive under v2 are **calibrated** under
+v3's stated typical-latency policy:
 
-| Session | Verdict | Timing limitation |
-|---|---|---|
-| 20260908-222242-b61c82f7 | inconclusive | novel_text raw CV 16.293% |
-| 20260908-222700-45d8895f | inconclusive | cached_text raw CV 17.880% |
-| 20260908-223123-029c221a | foundation_recorded | all scenario CVs below 10% |
+| Scenario | Median ms | Approximate 95% median interval ms | Relative uncertainty | Max batch deviation |
+|---|---:|---:|---:|---:|
+| index_absent | 5055.446 | 4999.403–5083.817 | 1.11% | 1.30% |
+| novel_text | 276.044 | 268.854–285.726 | 3.51% | 7.76% |
+| cached_text | 9.648 | 9.338–10.451 | 8.32% | 9.22% |
+| indexed_image | 9.561 | 8.791–10.287 | 8.06% | 11.07% |
+| modified_1pct | 288.596 | 273.983–298.493 | 5.06% | 5.95% |
 
-The exact aggregation command was:
+Use a new output filename; the v2 inconclusive artifact stays unchanged:
 
 ```sh
 python3 benchmarks/bench.py foundation \
   /Users/uday/.cache/visiongrep-bench/runs/20260908-222242-b61c82f7 \
   /Users/uday/.cache/visiongrep-bench/runs/20260908-222700-45d8895f \
   /Users/uday/.cache/visiongrep-bench/runs/20260908-223123-029c221a \
-  --output /Users/uday/.cache/visiongrep-bench/local-foundation-v2-20260908.json
+  --output /Users/uday/.cache/visiongrep-bench/local-foundation-v3-20260908.json
 ```
 
-It completed with verdict **inconclusive** and empty calibration bounds. It retained all
-nine batch medians per calibration scenario and all three source report hashes. Reasons:
-the two raw-CV failures above and an outlying novel-text calibration batch. This experiment
-successfully exercised recording and aggregation, but **did not establish a usable local
-foundation**. The limits were not adjusted after observing these failures. The new policy
-preserves complete evidence and reports uncertainty; it does not guarantee calibration
-on this machine under its current conditions.
+These retrospective results test usability, not independent validation of the selected
+policy. Regression tests additionally cover isolated raw spikes, sustained batch/session
+drift, imprecise medians, missing/failed checks, contract migration, candidate regressions,
+uncertain comparisons, and promising improvements. No real candidate is claimed to have
+passed v3 merely because the reference calibrated.
 
-All three share harness SHA-256
-`6d323d1709693c70c61aae7f924703faa1e51b0828808aa86fce76434d52b79c`.
-Their original report SHA-256 values, in table order, are:
+## End-to-end same-commit check
+
+One additional fixed-budget local comparison used the reanalyzed v3 foundation:
+
+```sh
+python3 benchmarks/bench.py run --mode compare --profile local-quick \
+  --candidate benchmark-foundation-v1 \
+  --baseline /Users/uday/.cache/visiongrep-bench/local-foundation-v3-20260908.json \
+  --max-hours 1
+```
+
+Run `20260908-230035-86bb928f` accepted the full contract, completed all nine pairs in
+each scenario and all 440 quality queries for each binary, and passed quality/behavior
+parity. It did not falsely promote an unchanged candidate. The outcome was `inconclusive`
+because the cached-text precheck median, 8.020 ms, fell below the historical reference's
+8.404 ms lower bound. Its novel-text median, 242.834 ms, remained in range. Paired median
+improvements were only 0.24–0.96%; cached-text's paired interval still extended to 5.81%.
+Neither the precheck margin nor candidate rules were changed after seeing this result.
+
+This confirms the baseline is usable by the runner, but not that every later session
+will pass environmental drift checks. Even sub-millisecond differences can matter for
+short operations. The reference calibrated under v3; later machine conditions can still
+make a comparison inconclusive. The run's report SHA-256 is:
 
 ```text
-523ffc3c9ce8fa8827ce8de395d1940cb99102059ac219f89821f62420171428
-b56439ddde95ec7780e71d0dee1bb7172f46467fe78a5ee26505f82bed72454a
-8cac7355e7495b48631541c9ddd0c8ed881771cbee26d7c74fa1da3bb420d981
+e429830761eebd8891da5970cb21d1609efc00dc3f03f3a3b4bc2a3ae8372d04
 ```
 
-This Markdown-only evidence update does not change the measurement contract digest.
-The earlier JSON audit remains an immutable snapshot of the twelve historical reports;
-the three fresh sessions are documented here rather than rewriting that snapshot.
-
-## CI and administration
-
-Rust and offline benchmark workflows now trigger only on pushes to main, retaining
-benchmark path filters. The separate manual model-contract smoke workflow remains manual.
-No cloud run is launched by this change.
-
-The GitHub connector returned an empty repository ruleset list on 2026-09-08. Classic main
-branch protection returned HTTP 403 (integration lacks administration access); the browser
-was signed out and could not display settings. No protection was changed. An administrator
-must check whether classic protection requires `Rust / ubuntu-latest`, `Rust / macos-15`,
-or `offline`, and remove only those corresponding CI requirements if present. Preserve
-reviews, force-push restrictions and unrelated protections.
+The original evidence, causal limitations and administration blocker are preserved in
+[the v2 record](LOCAL_SCREENING_V2.md). Classic branch protection still needs an
+administrator's check; no unrelated protection or cloud policy is changed here.

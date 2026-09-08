@@ -54,6 +54,11 @@ def audit(root: Path) -> dict:
                         for phase in phases
                     },
                     "summary": summary(times) if times else None,
+                    "median_estimate": (
+                        local_screening.estimate([times])
+                        if len(times) >= 9 and len(times) % 3 == 0
+                        else None
+                    ),
                     "timing_uncertainty": (
                         local_screening.uncertainty(times) if times else ["incomplete"]
                     ),
@@ -71,10 +76,10 @@ def audit(root: Path) -> dict:
                 "profile": config["profile"],
                 "contract": report.get("contract"),
                 "eligibility": (
-                    "fresh recordings required"
-                    if config["profile"].get("screening_policy")
-                    != local_screening.POLICY
-                    else "inspect full recording contract"
+                    "eligible for explicit policy reanalysis"
+                    if report.get("contract")
+                    and local_screening.compatible_recording(report["contract"])
+                    else "fresh recordings required"
                 ),
                 "scenarios": scenarios,
             }

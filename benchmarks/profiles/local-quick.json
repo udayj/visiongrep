@@ -2,7 +2,7 @@
   "name": "local-quick",
   "samples": 9,
   "calibration_batches": 3,
-  "screening_policy": "local-batches-v2",
+  "screening_policy": "local-median-v3",
   "corpus_size": 500,
   "cloud": false,
   "quality": true,

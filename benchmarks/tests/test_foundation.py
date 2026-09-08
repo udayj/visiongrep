@@ -8,7 +8,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness.runner import Run, calibration_scenarios, foundation
-from harness.storage import BENCHMARKS, FOUNDATION, digest, read_json, write_json
+from harness.storage import (
+    BENCHMARKS,
+    FOUNDATION,
+    digest,
+    read_json,
+    write_json,
+    harness_digest,
+)
 
 
 class FoundationRecording(unittest.TestCase):
@@ -144,6 +151,7 @@ class FoundationBounds(unittest.TestCase):
                     },
                     "contract": {
                         "profile": profile,
+                        "harness_sha256": harness_digest(),
                         "environment": {
                             "ami": "ami-test" if profile["cloud"] else None
                         },
@@ -175,7 +183,14 @@ class FoundationBounds(unittest.TestCase):
                     expected.add("no_cache")
                 self.assertEqual(
                     read_json(destination)["calibration_bounds"],
-                    {key: [97, 103] for key in expected},
+                    {
+                        key: (
+                            [90, 110.00000000000001]
+                            if name == "local-quick"
+                            else [97, 103]
+                        )
+                        for key in expected
+                    },
                 )
 
     def test_all_seven_triples_contribute_to_cloud_bounds(self):

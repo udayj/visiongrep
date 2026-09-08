@@ -22,6 +22,21 @@ table{border-collapse:collapse;width:100%}td,th{padding:12px;border-bottom:1px s
 pre{white-space:pre-wrap;background:#f4f6f8;padding:20px}h1{font-size:28px}</style>"""
     value += f"<h1>VisionGrep: {html.escape(report['verdict'])}</h1>"
     value += "<p>" + html.escape("; ".join(report.get("reasons", []))) + "</p>"
+    estimates = report.get("timing_screen", {}).get("estimates", {})
+    if estimates:
+        value += "<h2>Local median uncertainty and batch stability</h2>"
+        value += "<p>Approximate bootstrap intervals; local screening only. Raw CV is diagnostic.</p>"
+        value += "<table><tr><th>Scenario / binary</th><th>Median ms</th><th>95% interval ms</th><th>Max batch deviation</th><th>Raw CV</th></tr>"
+        for name, roles in estimates.items():
+            for role, info in roles.items():
+                lo, hi = info["median_interval_ms"]
+                value += (
+                    f"<tr><td>{html.escape(name)} / {html.escape(role)}</td>"
+                    f"<td>{info['median_ms']:.3f}</td><td>{lo:.3f} to {hi:.3f}</td>"
+                    f"<td>{info['max_relative_batch_deviation']:.1%}</td>"
+                    f"<td>{info['raw_summaries'][0]['cv']:.1%}</td></tr>"
+                )
+        value += "</table>"
     value += (
         "<table><tr><th>Scenario</th><th>Improvement</th><th>Interval</th><th>Pairs</th></tr>"
         + "".join(rows)

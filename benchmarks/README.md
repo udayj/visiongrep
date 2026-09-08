@@ -81,21 +81,34 @@ Foundation recording has no separate calibration invocations. Aggregation groups
 reference scenario's measurements into consecutive, non-overlapping triples: seven batch
 medians from 21 samples, three from local-quick's nine, or one from cloud-scale's three. Any final
 one or two samples still participate in the full-session stability check, but cannot form a
-three-sample batch. Bounds use these batch medians across at least three sessions, with
+three-sample batch. Cloud bounds use these batch medians across at least three sessions, with
 median +/- max(3 scaled MAD, 3% of median). Excessive spread or outlying batch medians
-refuse the foundation. All new comparison batch medians must fit its bounds. Reference CV
+refuse the cloud foundation. All new cloud comparison batch medians must fit its bounds. Reference CV
 over 10% invalidates a cloud run. These starting tolerances must not be loosened to pass a candidate.
 
-Local policy `local-batches-v2` keeps these numerical limits and uses a fixed nine-sample
-budget. Timing noise does not abort calibration or subsequent measurement/quality checks:
-the performance conclusion becomes `inconclusive`. Quality, behavior and definite resource
-failures remain failures. Three-pair local validation is only a rehearsal and is inconclusive.
-Choose at least three independent recording sessions in advance and include all of them;
-do not replace noisy sessions until bounds pass. Local aggregation writes an immutable
-schema-2 report: `calibrated` with bounds or `inconclusive` with reasons and batch medians
-but no usable bounds. Only calibrated matching contracts can be compared. Historical
-five-sample sessions require fresh recordings. The global harness digest changes for cloud
-too, requiring fresh contracts despite unchanged cloud policy. See [evidence and limits](LOCAL_SCREENING.md).
+Local policy `local-median-v3` uses the same fixed nine-sample budget, but judges the
+precision of typical latency rather than requiring uniform individual invocations. It
+reports the median of batch medians, an approximate 95% hierarchical bootstrap interval,
+raw CV, and maximum batch deviation. Local aggregation requires median uncertainty within
+10% and batch deviation within 15%, across every recorded scenario. Raw spikes are retained
+as diagnostics. Aggregation reassesses all sessions together rather than rejecting a
+session merely because its own median estimate is imprecise. Choose at least three sessions
+in advance and include all of them, without replacement.
+
+Schema-3 aggregation emits `calibrated` with reference bounds or `inconclusive` with reasons
+and no usable bounds. Local prechecks compare the current median with the reference median
+interval expanded by 10%, while independently checking current precision and batch stability.
+Only matching contracts can be compared. Explicit policy-only reanalysis of the known v2
+nine-sample harness is supported, with its source contract and report hashes preserved;
+unknown harnesses and old five-sample records require fresh recordings. See
+[evidence, compatibility and limits](LOCAL_SCREENING.md).
+
+A stable local comparison can be `promising`: a supported improvement of at least 5%, with
+paired intervals excluding regressions over 5% in every local timing and resource check.
+Quality and behavior must pass. This is a shortlist for considering cloud validation, never
+cloud qualification or an automatic cloud launch. Clear regressions/no useful gain are
+`does_not_qualify`; uncertain results remain `inconclusive`. The candidate is paired with
+newly measured foundation invocations, not compared only with old recorded medians.
 
 Samples alternate F/C and C/F. Comparisons use paired median ratios and deterministic
 bootstrap intervals with Bonferroni-adjusted alpha across timing scenarios. Fixed budgets
