@@ -88,6 +88,57 @@ a millisecond allowance to pass cached-text failures would fit thresholds after 
 the data. Until controlled fresh measurements justify one, v2 retains existing limits and
 labels uncertainty honestly. No performance improvement is claimed.
 
+## Fresh fixed-budget experiment, 2026-09-08
+
+Before publishing the change, three sequential, independent local recording processes
+were run with this command, once per session:
+
+```sh
+python3 benchmarks/bench.py run --mode record --profile local-quick --max-hours 1
+```
+
+The budget of three sessions was fixed before starting. No run was replaced or retried.
+All three retained nine samples for every scenario (45 timing samples each), passed all
+scenario behavior checks and completed the 440-query foundation quality evaluation.
+
+| Session | Verdict | Timing limitation |
+|---|---|---|
+| 20260908-222242-b61c82f7 | inconclusive | novel_text raw CV 16.293% |
+| 20260908-222700-45d8895f | inconclusive | cached_text raw CV 17.880% |
+| 20260908-223123-029c221a | foundation_recorded | all scenario CVs below 10% |
+
+The exact aggregation command was:
+
+```sh
+python3 benchmarks/bench.py foundation \
+  /Users/uday/.cache/visiongrep-bench/runs/20260908-222242-b61c82f7 \
+  /Users/uday/.cache/visiongrep-bench/runs/20260908-222700-45d8895f \
+  /Users/uday/.cache/visiongrep-bench/runs/20260908-223123-029c221a \
+  --output /Users/uday/.cache/visiongrep-bench/local-foundation-v2-20260908.json
+```
+
+It completed with verdict **inconclusive** and empty calibration bounds. It retained all
+nine batch medians per calibration scenario and all three source report hashes. Reasons:
+the two raw-CV failures above and an outlying novel-text calibration batch. This experiment
+successfully exercised recording and aggregation, but **did not establish a usable local
+foundation**. The limits were not adjusted after observing these failures. The new policy
+preserves complete evidence and reports uncertainty; it does not guarantee calibration
+on this machine under its current conditions.
+
+All three share harness SHA-256
+`6d323d1709693c70c61aae7f924703faa1e51b0828808aa86fce76434d52b79c`.
+Their original report SHA-256 values, in table order, are:
+
+```text
+523ffc3c9ce8fa8827ce8de395d1940cb99102059ac219f89821f62420171428
+b56439ddde95ec7780e71d0dee1bb7172f46467fe78a5ee26505f82bed72454a
+8cac7355e7495b48631541c9ddd0c8ed881771cbee26d7c74fa1da3bb420d981
+```
+
+This Markdown-only evidence update does not change the measurement contract digest.
+The earlier JSON audit remains an immutable snapshot of the twelve historical reports;
+the three fresh sessions are documented here rather than rewriting that snapshot.
+
 ## CI and administration
 
 Rust and offline benchmark workflows now trigger only on pushes to main, retaining
