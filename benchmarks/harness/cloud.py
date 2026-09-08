@@ -149,7 +149,7 @@ def launch(config: dict, settings_path: Path) -> dict:
             if config.get("baseline"):
                 shutil.copyfile(config["baseline"], staging / "baseline.json")
             commits = {"foundation": FOUNDATION}
-            if config["mode"] != "record":
+            if config["mode"] not in ("record", "diagnose"):
                 commits["candidate"] = config["candidate"]
             for role, sha in commits.items():
                 archive = staging / (role + ".tar")
@@ -198,6 +198,15 @@ def launch(config: dict, settings_path: Path) -> dict:
                     timeout=600,
                 )
         boot = bootstrap(bucket, prefix, region, settings["ami"], config["max_seconds"])
+        if config["mode"] == "diagnose":
+            # Diagnostic-only tools are installed before building or measuring, with a bound.
+            boot = boot.replace(
+                "chown -R bench:bench /opt/visiongrep-bench",
+                "timeout --kill-after=10s 180s bash -c 'apt-get update && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends strace'\n"
+                "sysctl -w kernel.sched_schedstats=1\n"
+                "chown -R bench:bench /opt/visiongrep-bench",
+            )
         boot = boot.replace(
             "export BENCH_INSTANCE_ID=$(cat instance-id)",
             """TOKEN=$(curl --fail -sS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)
