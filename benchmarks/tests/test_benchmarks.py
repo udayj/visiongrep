@@ -28,8 +28,13 @@ class ValidationConfiguration(unittest.TestCase):
         )
         profile = configuration(args)["profile"]
         self.assertEqual(profile["samples"], 3)
-        self.assertEqual(profile["calibration_batches"], 1)
+        self.assertEqual(profile["calibration_batches"], 3)
         self.assertTrue(profile["quality"])
+        cloud_short = configuration(parser().parse_args([
+            "plan", "--mode", "validate", "--profile", "cloud-standard",
+            "--validation-samples", "3",
+        ]))["profile"]
+        self.assertEqual(cloud_short["calibration_batches"], 1)
         standard = configuration(
             parser().parse_args(["plan", "--profile", "cloud-standard"])
         )["profile"]
@@ -257,6 +262,7 @@ class SuiteQualification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             profile = {
                 "name": profile_name,
+                "samples": 21,
                 "quality": True,
                 "scenarios": list(SCENARIOS),
             }

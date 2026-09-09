@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import behavior, quality
+from . import behavior, local_screening, quality
 from .assets import verify
 from .builds import build
 from .report import render
@@ -105,6 +105,12 @@ class Run:
             "quality": {},
             "comparisons": {},
         }
+        if local_screening.enabled(self.profile):
+            self.report["schema_version"] = 3
+            self.report["timing_screen"] = {
+                "policy": local_screening.POLICY,
+                "reasons": [],
+            }
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.heartbeat, daemon=True)
 
@@ -287,6 +293,13 @@ class Run:
                 raise ValueError(
                     "foundation measurement contract differs; recalibration is required"
                 )
+            if (
+                local_screening.enabled(self.profile)
+                and baseline.get("verdict") != "calibrated"
+            ):
+                raise ValueError(
+                    "local foundation is not calibrated; fresh recordings required"
+                )
         if identities["foundation"] != FOUNDATION:
             raise ValueError("wrong foundation binary identity")
         if config["mode"] == "diagnose":
@@ -328,6 +341,21 @@ class Run:
             finally:
                 scenario.cleanup()
                 self.discard_inputs(scenario)
+            if local_screening.enabled(self.profile):
+                times = [x["wall_ms"] for x in values]
+                info = local_screening.estimate([times])
+                self.report["timing_screen"].setdefault("calibration", {})[name] = info
+                reasons = list(info["reasons"])
+                if baseline:
+                    lo, hi = baseline["calibration_bounds"][name]
+                    if not lo <= info["median_ms"] <= hi:
+                        reasons.append(
+                            "foundation median drift outside reference uncertainty and 10% margin"
+                        )
+                self.report["timing_screen"]["reasons"].extend(
+                    f"calibration/{name}: {reason}" for reason in reasons
+                )
+                continue
             medians = [
                 summary([x["wall_ms"] for x in values[i : i + 3]])["median"]
                 for i in range(0, calibration_samples, 3)
@@ -427,7 +455,7 @@ class Run:
                     instance.cleanup()
                     self.discard_inputs(instance)
         self.summarize()
-        if any(
+        if not local_screening.enabled(self.profile) and any(
             summary([v["wall_ms"] for v in by_binary["foundation"]])["cv"] > 0.10
             for by_binary in self.report["samples"].values()
         ):
@@ -443,6 +471,19 @@ class Run:
 
     def summarize(self):
         config = self.config
+        if local_screening.enabled(self.profile):
+            roles = (
+                {"foundation"}
+                if config["mode"] == "record"
+                else {"foundation", "candidate"}
+            )
+            for name in self.profile["scenarios"]:
+                observations = self.report["samples"].get(name, {})
+                if set(observations) != roles or any(
+                    len(rows) != self.profile["samples"]
+                    for rows in observations.values()
+                ):
+                    raise ValueError(f"incomplete local measurements for {name}")
         self.report["summaries"] = {}
         self.report["resource_comparisons"] = {}
         behavior_failures = []
@@ -543,9 +584,9 @@ class Run:
                 for item in self.report["comparisons"].values()
             )
             self.report.update(
-                verdict="validation_passed"
-                if okay and not drift
-                else "validation_failed",
+                verdict=(
+                    "validation_passed" if okay and not drift else "validation_failed"
+                ),
                 reasons=["same-commit comparison; not an improvement claim"],
             )
         else:
@@ -635,6 +676,69 @@ class Run:
                 }[config["mode"]],
                 reasons=existing_failures + behavior_failures,
             )
+        if local_screening.enabled(self.profile):
+            self.screen_local()
+
+    def screen_local(self):
+        screen = self.report["timing_screen"]
+        if self.config["mode"] == "validate" and any(
+            abs(item["improvement"]) > 0.05
+            for item in self.report["comparisons"].values()
+        ):
+            screen["reasons"].append("same-commit timing drift exceeds 5%")
+        for name, roles in self.report["samples"].items():
+            for role, rows in roles.items():
+                times = [row["wall_ms"] for row in rows]
+                if len(times) >= 9 and len(times) % 3 == 0:
+                    info = local_screening.estimate([times])
+                    screen.setdefault("estimates", {}).setdefault(name, {})[role] = info
+                    reasons = info["reasons"]
+                else:
+                    reasons = local_screening.uncertainty(times)
+                screen["reasons"].extend(
+                    f"{name}/{role}: {reason}" for reason in reasons
+                )
+        screen["verdict"] = "inconclusive" if screen["reasons"] else "stable"
+        quality_ok = self.report.get("quality_comparison", {}).get(
+            "passed", not self.profile["quality"] or self.config["mode"] == "record"
+        )
+        if self.profile["quality"] and self.config["mode"] == "record":
+            expected = len(
+                read_json(BENCHMARKS / "corpora/quality-500.json")["queries"]
+            )
+            quality_runs = self.report["quality"].get("foundation", {}).get("runs", [])
+            quality_ok = len(quality_runs) == expected
+            if not quality_ok:
+                self.report.update(
+                    verdict="invalid",
+                    reasons=self.report["reasons"]
+                    + ["incomplete foundation quality evaluation"],
+                )
+        resource_failure = any(
+            item["interval"][1] < -0.05
+            for item in self.report["resource_comparisons"].values()
+        )
+        # Uncertain timing cannot erase independent correctness/resource failures.
+        if (
+            screen["reasons"]
+            and quality_ok
+            and self.report["behavior_comparison"]["passed"]
+            and not resource_failure
+        ):
+            self.report.update(verdict="inconclusive", reasons=list(screen["reasons"]))
+        elif (
+            self.config["mode"] == "compare"
+            and not screen["reasons"]
+            and quality_ok
+            and self.report["behavior_comparison"]["passed"]
+            and not resource_failure
+        ):
+            result, reasons = local_screening.candidate_decision(
+                self.report["comparisons"],
+                self.report["resource_comparisons"],
+                self.profile["scenarios"],
+            )
+            self.report.update(verdict=result, reasons=reasons)
 
 
 def worker(config_path: Path) -> str:
@@ -665,11 +769,26 @@ def foundation(reports: list[Path], destination: Path):
         records
     ):
         raise ValueError("at least three distinct foundation sessions are required")
-    if any(row["verdict"] != "foundation_recorded" for row in records):
+    if any(
+        row["verdict"] not in ("foundation_recorded", "inconclusive") for row in records
+    ):
         raise ValueError("all sessions must finish recording successfully")
     first = records[0]["contract"]
+    local = local_screening.enabled(first["profile"])
+    if any(
+        row["verdict"] != "foundation_recorded"
+        and not (
+            local
+            and row["verdict"] == "inconclusive"
+            and row.get("config", {}).get("mode") == "record"
+        )
+        for row in records
+    ):
+        raise ValueError("all sessions must finish recording successfully")
     if any(row["contract"] != first for row in records):
         raise ValueError("foundation sessions have different contracts")
+    if local:
+        return local_foundation(records, reports, destination)
     if (
         first["environment"]["ami"]
         and len({row["environment"]["instance_id"] for row in records}) < 3
@@ -712,3 +831,70 @@ def foundation(reports: list[Path], destination: Path):
             ],
         },
     )
+
+
+def local_foundation(
+    records: list[dict], reports: list[Path], destination: Path
+) -> str:
+    profile = records[0]["contract"]["profile"]
+    if not local_screening.compatible_recording(records[0]["contract"]):
+        raise ValueError("local screening contract changed; fresh recordings required")
+    reasons, bounds = [], {}
+    sessions = {name: [] for name in profile["scenarios"]}
+    quality_count = len(read_json(BENCHMARKS / "corpora/quality-500.json")["queries"])
+    for row in records:
+        if row.get("config", {}).get("mode") != "record":
+            raise ValueError("local foundation requires recording sessions")
+        quality_runs = row.get("quality", {}).get("foundation", {}).get("runs", [])
+        if profile["quality"] and len(quality_runs) != quality_count:
+            raise ValueError("incomplete foundation quality evaluation")
+        for name in profile["scenarios"]:
+            observations = row["samples"].get(name, {}).get("foundation", [])
+            if len(observations) != profile["samples"]:
+                raise ValueError(f"incomplete foundation measurements for {name}")
+            if any(
+                not item.get("behavior", {}).get("passed", False)
+                for item in observations
+            ):
+                raise ValueError(f"foundation behavior failed for {name}")
+            times = [item["wall_ms"] for item in observations]
+            sessions[name].append(times)
+    estimates = {
+        name: local_screening.estimate(times) for name, times in sessions.items()
+    }
+    for name, info in estimates.items():
+        reasons.extend(f"{name}: {reason}" for reason in info["reasons"])
+    for name in calibration_scenarios(profile):
+        bounds[name] = local_screening.reference_bounds(estimates[name])
+    source_contract = records[0]["contract"]
+    analyzed_contract = source_contract | {
+        "profile": profile | {"screening_policy": local_screening.POLICY},
+        "harness_sha256": harness_digest(),
+    }
+    result = "inconclusive" if reasons else "calibrated"
+    write_json(
+        destination,
+        {
+            "schema_version": 3,
+            "verdict": result,
+            "reasons": reasons,
+            "contract": analyzed_contract,
+            "source_contract": source_contract,
+            "analysis_policy": local_screening.POLICY,
+            "estimates": estimates,
+            "calibration_bounds": {} if reasons else bounds,
+            "calibration_batch_medians": {
+                name: [
+                    value
+                    for batch in estimates[name]["batch_medians_ms"]
+                    for value in batch
+                ]
+                for name in calibration_scenarios(profile)
+            },
+            "reports": [
+                {"path": str(path), "sha256": digest(path / "report.json")}
+                for path in reports
+            ],
+        },
+    )
+    return result

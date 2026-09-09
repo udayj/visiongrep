@@ -51,7 +51,7 @@ def parser():
             "--validation-samples",
             type=int,
             choices=(3, 21),
-            help="validation only: paired samples per scenario; 3 also shortens calibration",
+            help="validation only: paired samples per scenario; 3 shortens cloud calibration",
         )
         run.add_argument("--candidate", default="HEAD")
         run.add_argument("--baseline", type=Path)
@@ -106,7 +106,9 @@ def configuration(args) -> dict:
         if args.mode != "validate":
             raise ValueError("--validation-samples requires --mode validate")
         profile["samples"] = args.validation_samples
-        profile["calibration_batches"] = 1 if args.validation_samples == 3 else 3
+        profile["calibration_batches"] = (
+            3 if args.profile == "local-quick" else (1 if args.validation_samples == 3 else 3)
+        )
     if args.max_hours <= 0 or args.max_hours > 24 or args.budget_usd <= 0:
         raise ValueError("runtime must be in (0,24] hours and budget must be positive")
     cache = outside_repository(args.cache)
@@ -235,7 +237,9 @@ def main():
         if result in ("invalid", "cancelled", "validation_failed"):
             raise SystemExit(2)
     elif args.action == "foundation":
-        runner.foundation(args.runs, outside_repository(args.output))
+        result = runner.foundation(args.runs, outside_repository(args.output))
+        if result:
+            print(result)
     elif args.action == "cloud-reconcile":
         cloud.reconcile(args.cloud, slot=args.cloud_slot)
     else:

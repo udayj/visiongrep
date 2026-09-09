@@ -8,7 +8,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness.runner import Run, calibration_scenarios, foundation
-from harness.storage import BENCHMARKS, FOUNDATION, digest, read_json, write_json
+from harness.storage import (
+    BENCHMARKS,
+    FOUNDATION,
+    digest,
+    read_json,
+    write_json,
+    harness_digest,
+)
 
 
 class FoundationRecording(unittest.TestCase):
@@ -21,7 +28,9 @@ class FoundationRecording(unittest.TestCase):
             binary.write_bytes(b"binary")
             baseline = root / "baseline.json"
             measured_contract = {"build_environment": {"rustc": "pinned"}}
-            write_json(baseline, {"contract": measured_contract})
+            write_json(
+                baseline, {"contract": measured_contract, "verdict": "calibrated"}
+            )
             for mode in ("record", "validate", "compare"):
                 config = {
                     "directory": str(root / mode),
@@ -54,6 +63,16 @@ class FoundationRecording(unittest.TestCase):
                     self.assertEqual(calibrate.call_count, mode != "record")
                     measure.assert_called_once()
                     self.assertEqual(run.report["calibration"], {})
+                    if mode == "compare":
+                        write_json(
+                            baseline,
+                            {
+                                "contract": measured_contract,
+                                "verdict": "inconclusive",
+                            },
+                        )
+                        with self.assertRaisesRegex(ValueError, "not calibrated"):
+                            run.perform()
 
     def test_scale_precheck_matches_recorded_corpus_and_retains_drift_guard(self):
         corpora_seen = []
@@ -119,15 +138,32 @@ class FoundationBounds(unittest.TestCase):
                 path / "report.json",
                 {
                     "verdict": "foundation_recorded",
+                    "config": {"mode": "record"},
+                    "quality": {
+                        "foundation": {
+                            "runs": [{}]
+                            * len(
+                                read_json(BENCHMARKS / "corpora/quality-500.json")[
+                                    "queries"
+                                ]
+                            )
+                        }
+                    },
                     "contract": {
                         "profile": profile,
+                        "harness_sha256": harness_digest(),
                         "environment": {
                             "ami": "ami-test" if profile["cloud"] else None
                         },
                     },
                     "environment": {"instance_id": str(number)},
                     "samples": {
-                        name: {"foundation": [{"wall_ms": x} for x in times]}
+                        name: {
+                            "foundation": [
+                                {"wall_ms": x, "behavior": {"passed": True}}
+                                for x in times
+                            ]
+                        }
                         for name in profile["scenarios"]
                     },
                 },
@@ -147,7 +183,14 @@ class FoundationBounds(unittest.TestCase):
                     expected.add("no_cache")
                 self.assertEqual(
                     read_json(destination)["calibration_bounds"],
-                    {key: [97, 103] for key in expected},
+                    {
+                        key: (
+                            [90, 110.00000000000001]
+                            if name == "local-quick"
+                            else [97, 103]
+                        )
+                        for key in expected
+                    },
                 )
 
     def test_all_seven_triples_contribute_to_cloud_bounds(self):
@@ -174,11 +217,11 @@ class FoundationBounds(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "incomplete foundation"):
                 foundation(paths, root / "foundation.json")
 
-    def test_remainder_samples_still_participate_in_stability_check(self):
+    def test_five_samples_cannot_supply_the_new_local_budget(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             paths = self.records(root, "local-quick", [100, 100, 100, 100, 200])
-            with self.assertRaisesRegex(ValueError, "variation too large"):
+            with self.assertRaisesRegex(ValueError, "incomplete foundation"):
                 foundation(paths, root / "foundation.json")
 
     def test_drift_between_instances_rejects_foundation(self):
