@@ -43,12 +43,25 @@ must come from three fresh instances. Merge the harness before recording these r
 keep the application tag `benchmark-foundation-v1` unchanged. Recording measures only the
 foundation binary, with the profile's normal sample count and one quality pass when enabled.
 It skips the separate calibration precheck and derives reference bounds from its recorded
-scenario samples. Aggregate the successful sessions and compare candidates:
+scenario samples. Aggregate all planned, complete sessions and compare candidates:
 
 ```sh
 python3 benchmarks/bench.py foundation /path/run1 /path/run2 /path/run3 --output /path/foundation.json
 python3 benchmarks/bench.py run --candidate COMMIT --baseline /path/foundation.json --detach
 ```
+
+Save local aggregates outside the checkout, for example under
+`~/.cache/visiongrep-bench/local-foundation-<date>.json`. A later session on the same
+machine can find saved aggregates with:
+
+```sh
+ls ~/.cache/visiongrep-bench/local-foundation-*.json
+```
+
+Select an aggregate with verdict `calibrated` and pass its full path with `--baseline`.
+The runner checks its measurement contract before use; it does not automatically select
+the newest file. Raw session reports remain under `~/.cache/visiongrep-bench/runs/`.
+These files are local to the machine and are not supplied by a new Git checkout.
 
 Builds use the same routine locally and on EC2. Cache keys include the commit, source
 digest, actual Rust/Cargo/compiler/linker identities, release profile, target, and SDK.
@@ -95,13 +108,23 @@ as diagnostics. Aggregation reassesses all sessions together rather than rejecti
 session merely because its own median estimate is imprecise. Choose at least three sessions
 in advance and include all of them, without replacement.
 
+The interval uses 5,000 deterministic bootstrap draws: resample sessions, then batches
+within each session. Relative uncertainty is the larger distance from the median to an
+interval endpoint, divided by the median. Batch deviation is the largest absolute
+distance of any batch median from that median, divided by the median. Reports retain
+per-session medians, every batch median and raw statistics. The fixed limits apply to
+all local scenarios; do not adjust them for a candidate.
+
 Schema-3 aggregation emits `calibrated` with reference bounds or `inconclusive` with reasons
 and no usable bounds. Local prechecks compare the current median with the reference median
 interval expanded by 10%, while independently checking current precision and batch stability.
 Only matching contracts can be compared. Explicit policy-only reanalysis of the known v2
 nine-sample harness is supported, with its source contract and report hashes preserved;
-unknown harnesses and old five-sample records require fresh recordings. See
-[evidence, compatibility and limits](LOCAL_SCREENING.md).
+unknown harnesses and old five-sample records require fresh recordings. The supported v2
+harness digest is `6d323d1709693c70c61aae7f924703faa1e51b0828808aa86fce76434d52b79c`.
+Reanalysis retains `source_contract` and source report hashes, updates only the analysis
+policy and harness digest, and requires identical source contracts across sessions.
+Write a new aggregate file; preserve the original reports and older aggregates.
 
 A stable local comparison can be `promising`: a supported improvement of at least 5%, with
 paired intervals excluding regressions over 5% in every local timing and resource check.
@@ -109,6 +132,17 @@ Quality and behavior must pass. This is a shortlist for considering cloud valida
 cloud qualification or an automatic cloud launch. Clear regressions/no useful gain are
 `does_not_qualify`; uncertain results remain `inconclusive`. The candidate is paired with
 newly measured foundation invocations, not compared only with old recorded medians.
+
+With only three sessions and three batches each, the interval can underestimate
+uncertainty when measurements are correlated or conditions change. The batch check does
+not prove stable machine conditions. One isolated spike can leave the median unchanged.
+This policy measures typical latency; it does not certify tail latency or the absence of
+stalls. Use raw timings to examine stalls. Cloud confirmation is required for performance
+claims. To audit all saved local reports without changing them:
+
+```sh
+python3 benchmarks/audit_local.py ~/.cache/visiongrep-bench/runs > /tmp/local-audit.json
+```
 
 Samples alternate F/C and C/F. Comparisons use paired median ratios and deterministic
 bootstrap intervals with Bonferroni-adjusted alpha across timing scenarios. Fixed budgets
@@ -165,8 +199,9 @@ of observed disk inactivity, zero writeback, and at most 16 MiB dirty memory bef
 launching the timed CLI. The 30-second setup deadline includes flushing. Settling
 evidence is retained per observation; failure invalidates the run. This applies
 to normal recording, validation and comparisons as well as diagnostics.
-See `SQLITE_DIAGNOSTIC.md` for the validating experiment. SQLite durability and
-the foundation variation threshold are unchanged.
+This prevents setup writeback from contaminating database timings. SQLite durability
+settings are unchanged. A fresh resource helper starts after settling so the flush
+process does not affect CLI CPU or peak-memory accounting.
 
 External query images are transient: repeated queries still infer embeddings. Indexed
 query images reuse their stored vector and exclude themselves. Modifications replace pixels
@@ -237,12 +272,41 @@ launches; pass the original `--cloud-slot` when reconciling slots 2 or 3.
 Deadlines/cancellation preserve incomplete reports and cannot pass. `--wait` waits
 for termination and collects automatically in the authenticated launch session.
 
-After this update, record both foundations anew with the final merged harness:
-at least three local sessions sequentially, and at least three cloud sessions on
+When a measurement contract changes, record a new foundation unless an explicit
+reanalysis migration is supported. Use at least three local sessions sequentially,
+and at least three cloud sessions on
 distinct fresh instances (slots 1–3 may run concurrently). Complete cloud launches
 before starting local timing so bundle uploads do not compete with measurements
 on the Mac. Preserve older foundations as historical evidence. Never combine
 different contracts or accept diagnostic reports as foundation recordings.
+
+## Cloud storage diagnostics
+
+Use `--mode diagnose --profile cloud-standard` with the existing cloud settings to
+investigate storage stalls. Review the plan before launching a paid run:
+
+```sh
+python3 benchmarks/bench.py plan --mode diagnose --profile cloud-standard --cloud /path/cloud.json --max-hours 1
+python3 benchmarks/bench.py run --mode diagnose --profile cloud-standard --cloud /path/cloud.json --max-hours 1 --wait
+```
+
+The fixed protocol measures deletion, modified query image, modification and rename
+100 times each, then repeats with strace: 800 invocations in total. It retains behavior
+checks and omits quality inference. Only diagnostic runs install strace and enable
+scheduler statistics. Tracing adds overhead; the two batches are not a performance
+comparison.
+
+Each sample retains timestamps and resource counters in `diagnostic`. Each scenario
+batch has `telemetry.jsonl`; traced observations also have `syscalls.log`. Trace and
+telemetry collection uses tmpfs, with files copied outside timing. Limits are 64 MiB
+per trace and 128 MiB of telemetry per scenario batch; exceeding a limit fails the run.
+Examine sync durations together with disk, writeback and scheduler counters. A long
+syscall alone does not identify the cause. Keep all samples.
+
+`diagnostic_complete` means the protocol completed, not that it proved a cause.
+Diagnostic reports cannot calibrate a foundation. Interrupting the local `--wait`
+process does not cancel the cloud worker; use `cancel RUN`, or resume with
+`status RUN` and `collect RUN`.
 
 ## Development and history
 
