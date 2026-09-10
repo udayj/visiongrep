@@ -123,6 +123,7 @@ class Builds(unittest.TestCase):
                     "hardware",
                 )
             }
+            env["hardware"] = {"model name": "same"}
             with (
                 patch("harness.runner.environment", return_value=env),
                 patch("harness.runner.platform.system", return_value="Darwin"),
