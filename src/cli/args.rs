@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{CommandFactory, Parser, error::ErrorKind};
+use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 
 use super::terminal::OutputFormat;
 use crate::application::{CacheMode, Query, SearchRequest};
@@ -11,10 +11,15 @@ use crate::timing::TimingDestination;
 #[derive(Debug, Parser)]
 #[command(
     version,
+    subcommand_negates_reqs = true,
+    args_conflicts_with_subcommands = true,
     allow_missing_positional = true,
     about = "Rust-native visual grep for local folders, scripts, and AI agents"
 )]
 pub(crate) struct Cli {
+    #[command(subcommand)]
+    pub(crate) subcommand: Option<Subcommands>,
+
     #[arg(value_parser = parse_query, required_unless_present = "image", conflicts_with = "image", help = "Natural language description of what to find")]
     query: Option<String>,
 
@@ -25,8 +30,8 @@ pub(crate) struct Cli {
     )]
     image: Option<PathBuf>,
 
-    #[arg(help = "Directory to search recursively")]
-    path: PathBuf,
+    #[arg(required = true, help = "Directory to search recursively")]
+    path: Option<PathBuf>,
 
     #[arg(short = 'n', long = "top", default_value_t = 5, value_parser = parse_top, help = "Number of results to return")]
     top: usize,
@@ -94,6 +99,23 @@ pub(crate) struct Cli {
     timing_file: Option<PathBuf>,
 }
 
+#[derive(Debug, Subcommand)]
+pub(crate) enum Subcommands {
+    /// Serve sequential JSONL search requests, refreshing the index before each search
+    Serve {
+        #[arg(
+            long,
+            required = true,
+            help = "Read JSONL from stdin and write JSONL to stdout"
+        )]
+        stdio: bool,
+        #[arg(long, value_name = "PATH", help = "Store the index at PATH")]
+        index_path: Option<PathBuf>,
+        /// Directory to search recursively
+        path: PathBuf,
+    },
+}
+
 pub(crate) struct Command {
     pub(crate) request: SearchRequest,
     pub(crate) output_format: OutputFormat,
@@ -103,6 +125,12 @@ pub(crate) struct Command {
 
 impl Cli {
     pub(crate) fn into_command(self) -> Result<Command, clap::Error> {
+        let path = self.path.ok_or_else(|| {
+            Self::command().error(
+                ErrorKind::MissingRequiredArgument,
+                "provide a search directory",
+            )
+        })?;
         let query = match (self.query, self.image) {
             (Some(text), None) => Query::Text(text),
             (None, Some(path)) => Query::Image(path),
@@ -139,7 +167,7 @@ impl Cli {
         Ok(Command {
             request: SearchRequest::new(
                 query,
-                self.path,
+                path,
                 self.top,
                 self.threshold,
                 cache_mode,
@@ -194,6 +222,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn serve_requires_stdio_and_a_directory() {
+        let cli = Cli::try_parse_from([
+            "visiongrep",
+            "serve",
+            "--stdio",
+            "--index-path",
+            "photos.db",
+            "photos",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.subcommand,
+            Some(Subcommands::Serve { stdio: true, .. })
+        ));
+        for args in [
+            vec!["visiongrep", "serve", "photos"],
+            vec!["visiongrep", "serve", "--stdio"],
+            vec!["visiongrep", "serve", "--stdio", "photos", "--no-cache"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn subcommand_name_can_still_be_a_literal_query() {
+        let cli = Cli::try_parse_from(["visiongrep", "--top", "5", "serve", "photos"]).unwrap();
+        assert_eq!(cli.query.as_deref(), Some("serve"));
+        assert!(cli.subcommand.is_none());
+    }
+
+    #[test]
     fn image_query_accepts_options_before_or_after_the_search_path() {
         for args in [
             vec!["visiongrep", "--image", "reference.png", "photos"],
@@ -201,7 +260,7 @@ mod tests {
             vec!["visiongrep", "--image", "reference.png", "--", "photos"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
-            assert_eq!(cli.path, PathBuf::from("photos"));
+            assert_eq!(cli.path, Some(PathBuf::from("photos")));
             assert_eq!(cli.image, Some(PathBuf::from("reference.png")));
             assert!(cli.query.is_none());
             assert!(cli.into_command().is_ok());
@@ -212,7 +271,7 @@ mod tests {
     fn text_query_keeps_its_original_positional_arguments() {
         let cli = Cli::try_parse_from(["visiongrep", "red bicycle", "photos"]).unwrap();
         assert_eq!(cli.query.as_deref(), Some("red bicycle"));
-        assert_eq!(cli.path, PathBuf::from("photos"));
+        assert_eq!(cli.path, Some(PathBuf::from("photos")));
         assert!(cli.image.is_none());
     }
 

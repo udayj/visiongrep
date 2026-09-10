@@ -36,6 +36,44 @@ Use `--null` for exact paths separated by NUL bytes, or `--quiet` to suppress pr
 
 Exit codes are `0` for matches, `1` for no matches, and `2` for an operational or argument error.
 
+## Persistent stdio searches
+
+```sh
+./target/release/visiongrep serve --stdio --index-path photos.db ./photos
+```
+
+Keep the process open and send one JSON object per line on stdin:
+
+```json
+{"id":1,"query":"a dog on the beach","top":3}
+{"id":2,"image":"./reference.jpg","threshold":0.3}
+```
+
+Each request receives one flushed JSON line on stdout, in request order:
+
+```json
+{"id":1,"results":[{"score":0.31,"path":"./photos/beach-dog.jpg"}]}
+{"id":2,"results":[]}
+```
+
+Provide exactly one non-blank `query` or non-empty `image` path. `top` defaults to 5 and must
+be positive; `threshold` defaults to 0.25 and accepts -1 through 1. The optional `id` is a
+string or unsigned 64-bit integer and is echoed back (omitted/null IDs return null). Unknown
+fields are rejected. Paths follow the usual CLI rules: relative paths use the process's working
+directory, and JSON requires UTF-8 paths. To search for the literal word `serve` in one-shot
+mode, place a search option first: `visiongrep --top 5 serve ./photos`.
+
+Before each search, the service scans for additions, modifications and deletions and updates the
+index. SQLite stays open; text and vision models load only when needed and remain resident until
+exit. Image vectors are read from SQLite for each request. Keeping both models resident uses more
+memory than one-shot mode. The search directory is resolved at startup.
+
+Request failures return `{"id":1,"error":"..."}` and the service continues. Malformed JSON or
+schema errors return a null ID. Progress and warnings go to stderr. Close stdin to shut down;
+EOF and a closed output pipe exit with code 0, even if individual requests failed or had no matches.
+Startup/I/O failures and request lines exceeding 1 MiB (including the newline) exit with code 2.
+Stop the service before replacing or rebuilding its index with `--reindex`.
+
 ## Index cache and reindexing
 
 The default index is `.visiongrep.db` inside the searched directory. Repeated searches reuse
