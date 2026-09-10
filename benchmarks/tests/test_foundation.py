@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from harness.runner import Run, calibration_scenarios, foundation
+from harness import calibration
 from harness.storage import (
     BENCHMARKS,
     FOUNDATION,
@@ -184,16 +185,12 @@ class FoundationBounds(unittest.TestCase):
                 self.assertEqual(
                     read_json(destination)["calibration_bounds"],
                     {
-                        key: (
-                            [90, 110.00000000000001]
-                            if name == "local-quick"
-                            else [97, 103]
-                        )
+                        key: [90, 110.00000000000001]
                         for key in expected
                     },
                 )
 
-    def test_all_seven_triples_contribute_to_cloud_bounds(self):
+    def test_whole_session_median_sets_cloud_bounds(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             times = [
@@ -204,7 +201,7 @@ class FoundationBounds(unittest.TestCase):
             foundation(paths, destination)
             lo, hi = read_json(destination)["calibration_bounds"]["novel_text"]
             self.assertAlmostEqual((lo + hi) / 2, 101)
-            self.assertAlmostEqual(hi - 101, 2 * 1.4826 * 3)
+            self.assertAlmostEqual(hi - 101, 10.1)
 
     def test_missing_samples_are_not_replaced_by_old_calibration(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -229,10 +226,136 @@ class FoundationBounds(unittest.TestCase):
             root = Path(temporary)
             paths = self.records(root)
             row = read_json(paths[2] / "report.json")
-            row["samples"]["novel_text"]["foundation"] = [{"wall_ms": 130}] * 21
+            row["samples"]["novel_text"]["foundation"] = [{"wall_ms": 130, "behavior": {"passed": True}}] * 21
             write_json(paths[2] / "report.json", row)
             with self.assertRaisesRegex(ValueError, "variation too large|outlying"):
                 foundation(paths, root / "foundation.json")
+
+
+class SessionCalibration(unittest.TestCase):
+    def test_isolated_batch_does_not_override_typical_latency(self):
+        # A 12% slower triple is compatible with a stable session overall.
+        info = calibration.reference([[100] * 21, [100] * 21, [105] * 18 + [112] * 3])
+        self.assertAlmostEqual(info["median_ms"], 100)
+        self.assertEqual([s["samples"] for s in info["sessions"]], [21, 21, 21])
+        self.assertAlmostEqual(info["bounds_ms"][1], 110)
+
+    def test_material_drift_and_noisy_sessions_are_rejected(self):
+        for sessions in (
+            [[100] * 21, [100] * 21, [111] * 21],
+            [[100] * 20 + [200], [100] * 21, [100] * 21],
+            [[0] * 21, [100] * 21, [100] * 21],
+        ):
+            with self.subTest(sessions=sessions), self.assertRaises(ValueError):
+                calibration.reference(sessions)
+
+    def test_known_migration_preserves_source_contracts_and_reports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = FoundationBounds().records(root)
+            originals = []
+            for number, path in enumerate(paths):
+                row = read_json(path / "report.json")
+                row["contract"]["harness_sha256"] = calibration.REANALYZABLE_V3
+                row["contract"]["environment"]["hardware"] = {
+                    "model name": "same CPU",
+                    "microcode": str(number),
+                    "flags": "same flags",
+                }
+                write_json(path / "report.json", row)
+                originals.append(row["contract"])
+            hashes = [digest(path / "report.json") for path in paths]
+            output = root / "foundation.json"
+            self.assertEqual(foundation(paths, output), "calibrated")
+            result = read_json(output)
+            self.assertEqual(result["source_contracts"], originals)
+            self.assertEqual(result["contract"]["harness_sha256"], harness_digest())
+            self.assertNotIn("microcode", result["contract"]["environment"]["hardware"])
+            self.assertEqual([item["sha256"] for item in result["reports"]], hashes)
+            self.assertEqual([digest(path / "report.json") for path in paths], hashes)
+
+    def test_other_contract_changes_and_unknown_harness_are_rejected(self):
+        for field in ("harness_sha256", "ami", "flags", "build_environment"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                paths = FoundationBounds().records(root)
+                row = read_json(paths[2] / "report.json")
+                if field == "ami":
+                    row["contract"]["environment"][field] = "different"
+                elif field == "flags":
+                    row["contract"]["environment"]["hardware"] = {"flags": "different"}
+                else:
+                    row["contract"][field] = "different"
+                write_json(paths[2] / "report.json", row)
+                with self.assertRaisesRegex(
+                    ValueError, "different contracts|unknown measurement"
+                ):
+                    foundation(paths, root / "foundation.json")
+
+    def test_incomplete_behavior_quality_and_duplicate_instances_are_rejected(self):
+        for failure in ("behavior", "quality", "instance"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                paths = FoundationBounds().records(root)
+                row = read_json(paths[2] / "report.json")
+                if failure == "behavior":
+                    row["samples"]["indexed_image"]["foundation"][0].pop("behavior")
+                elif failure == "quality":
+                    row["quality"]["foundation"]["runs"].pop()
+                else:
+                    row["environment"]["instance_id"] = "0"
+                write_json(paths[2] / "report.json", row)
+                with self.assertRaises(ValueError):
+                    foundation(paths, root / "foundation.json")
+
+    def test_local_v3_recordings_remain_reanalyzable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = FoundationBounds().records(root, "local-quick")
+            for path in paths:
+                row = read_json(path / "report.json")
+                row["contract"]["harness_sha256"] = calibration.REANALYZABLE_V3
+                write_json(path / "report.json", row)
+            self.assertEqual(foundation(paths, root / "local.json"), "calibrated")
+
+    def test_cloud_precheck_uses_session_median_and_retains_drift_guard(self):
+        times = [100] * 6 + [112] * 3
+
+        class Scenario:
+            def __init__(self, *args):
+                pass
+
+            def sample(self, index):
+                return {"wall_ms": times[index], "behavior": {"passed": True}}
+
+            def cleanup(self):
+                pass
+
+        profile = read_json(BENCHMARKS / "profiles/cloud-standard.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Run(
+                {
+                    "directory": temporary,
+                    "profile": profile,
+                    "max_seconds": 60,
+                    "hourly_budget_usd": 0,
+                }
+            )
+            baseline = {
+                "calibration_bounds": {
+                    name: [90, 110] for name in calibration_scenarios(profile)
+                }
+            }
+            with (
+                patch("harness.runner.Scenario", Scenario),
+                patch.object(run, "progress"),
+                patch.object(run, "save"),
+                patch.object(run, "discard_inputs"),
+            ):
+                run.calibrate(Path("binary"), Path("cache"), {}, baseline)
+                times[:] = [111] * 9
+                with self.assertRaisesRegex(ValueError, "calibration failed"):
+                    run.calibrate(Path("binary"), Path("cache"), {}, baseline)
 
 
 if __name__ == "__main__":

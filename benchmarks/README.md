@@ -1,5 +1,9 @@
 # VisionGrep benchmarks
 
+The purpose is to identify meaningful application improvements. Environment calibration
+is a coarse stability check; paired candidate/reference measurements determine gains
+and regressions. Do not tune acceptance rules to individual candidates.
+
 Requires Python 3.12+. The application reference is `benchmark-foundation-v1`
 (`8b518ed86ff4f29e9c071931c91efa3e5ec31b44`). Commit candidates before measuring;
 working-tree changes are excluded. Model or preprocessing changes need a separate evaluation.
@@ -50,7 +54,9 @@ the newest file. Raw session reports remain under `~/.cache/visiongrep-bench/run
 These files are local to the machine and are not supplied by a new Git checkout.
 
 The runner checks the reference commit, profile, corpus, models, machine and build
-settings before using a saved foundation. Local and cloud foundations are separate.
+settings before using a saved foundation. CPU microcode remains in diagnostic metadata
+but does not require an exact match: AWS manages host firmware, and each candidate is
+compared with the reference on the same instance. Local and cloud foundations are separate.
 The harness fingerprint hashes the sorted paths and contents of all Python and JSON
 files under `benchmarks/`, including tests and fixtures. It excludes Markdown and the
 current Git commit. Documentation-only changes do not require new recordings.
@@ -65,10 +71,16 @@ current Git commit. Documentation-only changes do not require new recordings.
 
 Comparisons precheck the foundation with three batches of three samples for novel and
 cached text, plus no-cache embedding on cloud-standard. Prechecks use the full corpus.
-Recording has no separate precheck. Cloud aggregation uses consecutive triples across
-at least three sessions, with bounds of median ± max(3 scaled MAD, 3% of median).
-Excessive spread or outlying batches reject calibration. All cloud precheck batches
-must fit these bounds; reference CV over 10% invalidates a cloud run.
+Recording has no separate precheck. Cloud policy `cloud-session-median-v1` requires
+at least three independent instances. For novel text, cached text, and (cloud-standard)
+no-cache embedding, it takes the median of each complete session, then the median of
+those session medians. Every session median must lie within ±10% of that center;
+these same bounds check the complete precheck's median on future comparison runs.
+Individual three-sample batches do not have to fit an outlier fence. All raw samples
+are retained, and within-session reference CV over 10% still invalidates a cloud run.
+These bounds are practical drift limits, not confidence intervals or a relaxation of
+the 5% candidate improvement/regression rules. Three hosts provide limited evidence
+about fleet-wide variability.
 
 Local policy `local-median-v3` groups each session's nine samples into three consecutive
 triples. It estimates typical latency as the median of batch medians across sessions.
@@ -84,10 +96,19 @@ It returns `calibrated`, or `inconclusive` without usable bounds. Local precheck
 the same precision and stability, with the current median inside the saved interval
 expanded by 10%. Do not adjust limits per candidate.
 
-Reanalysis of the known v2 nine-sample harness is supported by
-[local_screening.py](harness/local_screening.py), with source contracts and report hashes
-preserved. Other contract changes and old five-sample records require fresh recordings.
-Write a new aggregate file; preserve the original reports.
+Analysis-only reaggregation is supported for the known v3 harness fingerprint
+`f6750c4af39c4f55de442f197e217394fe24f9ef01c40d87e17bfa38e95feec9`
+(local and cloud), plus the already supported local v2 nine-sample harness. The
+`foundation` command accepts these original recording directories, preserves their
+source contracts and report hashes, and writes the current analysis contract. It does
+not rewrite raw reports. Unknown harnesses, old five-sample local records, and other
+measurement contract changes still require fresh recordings.
+
+After an analysis update, regenerate aggregates before comparison, using the same
+three planned sessions. For cloud, pass each collected `RUN/remote` directory. For
+local, use the original directories listed in the saved aggregate's `reports` field.
+Always choose a new output filename; original aggregates remain immutable. Local
+median estimates and thresholds are unchanged by the cloud calibration update.
 
 With few sessions, correlated measurements or changing conditions can make the interval
 optimistic. This policy screens typical latency, not tail latency or occasional stalls.

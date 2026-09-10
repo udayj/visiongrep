@@ -4,7 +4,7 @@ import random
 import statistics
 
 from .statistics import percentile, summary
-from .storage import harness_digest
+from .calibration import compatible_harness
 
 POLICY = "local-median-v3"
 MEDIAN_PRECISION = 0.10
@@ -94,7 +94,7 @@ def compatible_recording(contract: dict) -> bool:
         and (
             (
                 profile.get("screening_policy") == POLICY
-                and contract.get("harness_sha256") == harness_digest()
+                and compatible_harness(contract.get("harness_sha256"))
             )
             or (
                 profile.get("screening_policy") == "local-batches-v2"

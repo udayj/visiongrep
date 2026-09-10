@@ -346,7 +346,7 @@ class LocalScreening(unittest.TestCase):
                     read_json(BENCHMARKS / "profiles" / (name + ".json"))
                 )
             )
-        # The original narrow MAD band and 10% CV guard remain unchanged.
+        # Cloud still rejects excessive within-session variation.
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
             paths = fixtures.FoundationBounds().records(root, values=[100] * 20 + [200])

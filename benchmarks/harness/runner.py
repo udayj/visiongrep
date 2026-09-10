@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import behavior, local_screening, quality
+from . import behavior, calibration, local_screening, quality
 from .assets import verify
 from .builds import build
 from .report import render
@@ -64,26 +64,28 @@ def environment(profile: dict) -> dict:
 
 def contract(config: dict, profile: dict, corpus: dict) -> dict:
     env = environment(profile)
-    return {
-        "foundation_sha": FOUNDATION,
-        "harness_sha256": harness_digest(),
-        "corpus_sha256": config["corpus_sha256"],
-        "profile": profile,
-        "quality_sha256": digest(BENCHMARKS / "corpora/quality-500.json"),
-        "artifacts_sha256": digest(BENCHMARKS / "profiles/artifacts.json"),
-        "environment": {
-            key: env[key]
-            for key in (
-                "system",
-                "release",
-                "machine",
-                "cpu_count",
-                "python",
-                "ami",
-                "hardware",
-            )
-        },
-    }
+    return calibration.without_microcode(
+        {
+            "foundation_sha": FOUNDATION,
+            "harness_sha256": harness_digest(),
+            "corpus_sha256": config["corpus_sha256"],
+            "profile": profile,
+            "quality_sha256": digest(BENCHMARKS / "corpora/quality-500.json"),
+            "artifacts_sha256": digest(BENCHMARKS / "profiles/artifacts.json"),
+            "environment": {
+                key: env[key]
+                for key in (
+                    "system",
+                    "release",
+                    "machine",
+                    "cpu_count",
+                    "python",
+                    "ami",
+                    "hardware",
+                )
+            },
+        }
+    )
 
 
 class Run:
@@ -293,12 +295,9 @@ class Run:
                 raise ValueError(
                     "foundation measurement contract differs; recalibration is required"
                 )
-            if (
-                local_screening.enabled(self.profile)
-                and baseline.get("verdict") != "calibrated"
-            ):
+            if baseline.get("verdict") != "calibrated":
                 raise ValueError(
-                    "local foundation is not calibrated; fresh recordings required"
+                    "foundation is not calibrated; reaggregate recording sessions"
                 )
         if identities["foundation"] != FOUNDATION:
             raise ValueError("wrong foundation binary identity")
@@ -356,18 +355,15 @@ class Run:
                     f"calibration/{name}: {reason}" for reason in reasons
                 )
                 continue
-            medians = [
-                summary([x["wall_ms"] for x in values[i : i + 3]])["median"]
-                for i in range(0, calibration_samples, 3)
-            ]
-            # A single batch cannot estimate between-batch drift; check its raw spread.
-            stability_values = (
-                [x["wall_ms"] for x in values] if len(medians) == 1 else medians
+            times = [x["wall_ms"] for x in values]
+            info = summary(times)
+            stable = (
+                all(value > 0 for value in times)
+                and info["cv"] <= calibration.MAX_VARIATION
             )
-            stable = summary(stability_values)["cv"] <= 0.10
             if baseline:
                 lo, hi = baseline["calibration_bounds"][name]
-                stable &= all(lo <= value <= hi for value in medians)
+                stable &= lo <= info["median"] <= hi
             if not stable:
                 raise ValueError(
                     f"foundation calibration failed for {name}; retain run, investigate drift"
@@ -785,52 +781,73 @@ def foundation(reports: list[Path], destination: Path):
         for row in records
     ):
         raise ValueError("all sessions must finish recording successfully")
-    if any(row["contract"] != first for row in records):
-        raise ValueError("foundation sessions have different contracts")
     if local:
+        if any(row["contract"] != first for row in records):
+            raise ValueError("foundation sessions have different contracts")
         return local_foundation(records, reports, destination)
-    if (
-        first["environment"]["ami"]
-        and len({row["environment"]["instance_id"] for row in records}) < 3
+    if any(
+        not calibration.compatible_harness(row["contract"].get("harness_sha256"))
+        for row in records
+    ):
+        raise ValueError("unknown measurement harness; fresh recordings required")
+    contracts = [
+        calibration.without_microcode(row["contract"])
+        | {"harness_sha256": harness_digest()}
+        for row in records
+    ]
+    if any(item != contracts[0] for item in contracts):
+        raise ValueError("foundation sessions have different contracts")
+    if any(row.get("config", {}).get("mode") != "record" for row in records):
+        raise ValueError("foundation requires recording sessions")
+    if first["environment"]["ami"] and (
+        any(not row["environment"].get("instance_id") for row in records)
+        or len({row["environment"]["instance_id"] for row in records}) < 3
     ):
         raise ValueError("cloud foundation requires at least three different instances")
-    bounds = {}
-    for name in calibration_scenarios(first["profile"]):
-        values = []
-        for row in records:
+    profile = first["profile"]
+    quality_count = len(read_json(BENCHMARKS / "corpora/quality-500.json")["queries"])
+    for row in records:
+        quality_runs = row.get("quality", {}).get("foundation", {}).get("runs", [])
+        if profile["quality"] and len(quality_runs) != quality_count:
+            raise ValueError("incomplete foundation quality evaluation")
+        for name in profile["scenarios"]:
             observations = row["samples"].get(name, {}).get("foundation", [])
-            expected = first["profile"]["samples"]
-            if len(observations) != expected or expected < 3:
+            if len(observations) != profile["samples"] or profile["samples"] < 3:
                 raise ValueError(f"incomplete foundation measurements for {name}")
-            times = [observation["wall_ms"] for observation in observations]
-            if summary(times)["cv"] > 0.10:
-                raise ValueError(f"foundation variation too large for {name}")
-            # Match the comparison precheck's three-sample statistic. Remainders
-            # still participate in the full-session stability check above.
-            values.extend(
-                summary(times[i : i + 3])["median"] for i in range(0, len(times) - 2, 3)
-            )
-        info = summary(values)
-        radius = max(info["mad"] * 1.4826 * 3, info["median"] * 0.03)
-        if radius > info["median"] * 0.15 or info["cv"] > 0.10:
-            raise ValueError(f"foundation variation too large for {name}")
-        bounds[name] = [info["median"] - radius, info["median"] + radius]
-        if any(not bounds[name][0] <= value <= bounds[name][1] for value in values):
-            raise ValueError(
-                f"foundation contains outlying calibration batch for {name}"
-            )
+            if any(
+                not item.get("behavior", {}).get("passed", False)
+                for item in observations
+            ):
+                raise ValueError(f"foundation behavior failed for {name}")
+            calibration.session_summary([item["wall_ms"] for item in observations])
+    estimates = {
+        name: calibration.reference(
+            [
+                [item["wall_ms"] for item in row["samples"][name]["foundation"]]
+                for row in records
+            ]
+        )
+        for name in calibration_scenarios(profile)
+    }
     write_json(
         destination,
         {
-            "schema_version": 1,
-            "contract": first,
-            "calibration_bounds": bounds,
+            "schema_version": 2,
+            "verdict": "calibrated",
+            "analysis_policy": calibration.CLOUD_POLICY,
+            "contract": contracts[0],
+            "source_contracts": [row["contract"] for row in records],
+            "estimates": estimates,
+            "calibration_bounds": {
+                name: info["bounds_ms"] for name, info in estimates.items()
+            },
             "reports": [
                 {"path": str(path), "sha256": digest(path / "report.json")}
                 for path in reports
             ],
         },
     )
+    return "calibrated"
 
 
 def local_foundation(
