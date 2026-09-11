@@ -21,7 +21,6 @@ from .scenarios import CALIBRATION, SCENARIOS, Scenario
 from .statistics import paired, summary, verdict
 from .storage import (
     BENCHMARKS,
-    FOUNDATION,
     command,
     digest,
     harness_digest,
@@ -66,7 +65,7 @@ def contract(config: dict, profile: dict, corpus: dict) -> dict:
     env = environment(profile)
     return calibration.without_microcode(
         {
-            "foundation_sha": FOUNDATION,
+            "foundation_sha": config["foundation_sha"],
             "harness_sha256": harness_digest(),
             "corpus_sha256": config["corpus_sha256"],
             "profile": profile,
@@ -257,7 +256,7 @@ class Run:
         verify(cache, corpus)
         self.progress(stage="building")
         build_cache = cache / "builds"
-        commits = {"foundation": FOUNDATION}
+        commits = {"foundation": config["foundation_sha"]}
         if config["mode"] not in ("record", "diagnose"):
             commits["candidate"] = config["candidate"]
         binaries, identities, settings = {}, {}, {}
@@ -299,14 +298,14 @@ class Run:
                 raise ValueError(
                     "foundation is not calibrated; reaggregate recording sessions"
                 )
-        if identities["foundation"] != FOUNDATION:
+        if identities["foundation"] != config["foundation_sha"]:
             raise ValueError("wrong foundation binary identity")
         if config["mode"] == "diagnose":
             from .diagnostics import measure
 
             measure(self, binaries["foundation"], cache, corpus)
             return
-        if config["mode"] == "validate" and identities["candidate"] != FOUNDATION:
+        if config["mode"] == "validate" and identities["candidate"] != config["foundation_sha"]:
             raise ValueError("validation must compare foundation against itself")
         if config["mode"] != "record":
             self.calibrate(binaries["foundation"], cache, corpus, baseline)
@@ -515,6 +514,9 @@ class Run:
                             )
                 fields = (
                     "wall_ms",
+                    "first_response_ms",
+                    "first_update_ms",
+                    "cached_response_ms",
                     "peak_rss_bytes",
                     "index_bytes",
                     "index_bytes_per_image",

@@ -1,7 +1,10 @@
 # VisionGrep benchmarks
 
-Requires Python 3.12+. The reference is `benchmark-foundation-v1`
-(`8b518ed86ff4f29e9c071931c91efa3e5ec31b44`). Candidates must be committed;
+Requires Python 3.12+. The reference is the release tag `v0.2.0`.
+The tag is resolved once into a commit SHA in each run configuration and measurement
+contract; comparison rejects a baseline with a different reference. Do not move release
+tags. The historical `benchmark-foundation-v1` and its recordings remain unchanged.
+Candidates must be committed;
 working-tree changes are excluded. Model or preprocessing changes need separate evaluation.
 
 ## Prepare and validate
@@ -54,9 +57,32 @@ Python and JSON files, including tests; Markdown and Git commit IDs are excluded
 
 | Profile | Images | Samples per binary/scenario | Coverage |
 |---|---:|---:|---|
-| local-quick | 500 | 9 | Indexing, text/image queries, modifications, quality |
-| cloud-standard | 500 | 21 | All 14 timing subcases, quality |
-| cloud-scale | 10,000 | 3 | Indexing, queries, modifications, deletions, renames |
+| local-quick | 500 | 9 | Indexing, queries, modifications, persistent sequences, quality |
+| cloud-standard | 500 | 21 | All 16 timing subcases, quality |
+| cloud-scale | 10,000 | 3 | Indexing, queries, modifications, deletions, renames, persistent sequences |
+
+Both persistent sequences start one fresh `serve --stdio` process per sample, against
+an already indexed corpus. The process remains alive for five sequential requests:
+
+- `persistent_text`: first novel text request, three further novel queries, then a
+  repeat of the last query as a cached control. `wall_ms` is the median of the three
+  warm novel round trips.
+- `persistent_updates`: first text request, three successive 1% pixel replacements
+  using the same query, then an unchanged cached control. The first update loads the
+  vision session; `wall_ms` is the median of the remaining two updates with that session
+  retained. Every request still refreshes the directory and reads the index.
+
+`first_response_ms` includes process startup; `first_update_ms` records the initial
+vision load; `cached_response_ms` records the control. Raw per-request latencies and
+results are retained. Timing covers request write/flush through receipt of a complete
+response line, excluding mutations, parsing, and behavior checks. Peak RSS covers the
+whole server lifetime, including first use. Each response checks result membership,
+finite scores, index membership, normalized embeddings, expected pixels, and metadata;
+comparisons check every response's ranking and scores. Internal phase timings are not
+available for serve. The independent statistical sample is a process sequence, not an
+individual request. First-use and control timings are descriptive; the primary latency
+gate uses the warm median. One-shot and persistent scenarios share one foundation per
+profile; the new measurement contract requires fresh recordings.
 
 Comparisons precheck novel and cached text with nine samples each, plus no-cache
 embedding on cloud-standard, using the full corpus. Recording has no separate precheck.

@@ -18,6 +18,8 @@
     "modified_1pct",
     "deleted_1pct",
     "renamed_1pct",
-    "read_only"
+    "read_only",
+    "persistent_text",
+    "persistent_updates"
   ]
 }

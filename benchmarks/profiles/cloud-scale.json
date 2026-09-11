@@ -11,6 +11,8 @@
     "indexed_image",
     "modified_1pct",
     "deleted_1pct",
-    "renamed_1pct"
+    "renamed_1pct",
+    "persistent_text",
+    "persistent_updates"
   ]
 }

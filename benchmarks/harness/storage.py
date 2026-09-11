@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 BENCHMARKS = ROOT / "benchmarks"
-FOUNDATION = "8b518ed86ff4f29e9c071931c91efa3e5ec31b44"
+FOUNDATION = "v0.2.0"
 
 
 def read_json(path: Path):

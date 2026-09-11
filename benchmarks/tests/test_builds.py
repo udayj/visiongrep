@@ -109,6 +109,7 @@ class Builds(unittest.TestCase):
                 "corpus_sha256": digest(corpus),
                 "mode": "compare",
                 "candidate": FOUNDATION,
+                "foundation_sha": FOUNDATION,
                 "baseline": str(root / "baseline.json"),
             }
             env = {
