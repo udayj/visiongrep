@@ -79,7 +79,8 @@ response line, excluding mutations, parsing, and behavior checks. Peak RSS cover
 whole server lifetime, including first use. Each response checks result membership,
 finite scores, index membership, normalized embeddings, expected pixels, and metadata;
 comparisons check every response's ranking and scores. Internal phase timings are not
-available for serve. The independent statistical sample is a process sequence, not an
+available for serve; compiled binary provenance comes from the untimed seed warmup.
+The independent statistical sample is a process sequence, not an
 individual request. First-use and control timings are descriptive; the primary latency
 gate uses the warm median. One-shot and persistent scenarios share one foundation per
 profile; the new measurement contract requires fresh recordings.

@@ -9,15 +9,38 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from harness.persistent import exchange, run
+from harness.persistent import exchange, run, sample
 from harness import behavior
 from harness.storage import BENCHMARKS
 
 
 class PersistentSequences(unittest.TestCase):
+    def test_sample_preserves_binary_identity_without_reusing_warmup_durations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            warmup = root / "observations/warmup"
+            warmup.mkdir(parents=True)
+            (warmup / "phases.json").write_text(json.dumps({
+                "environment": {"commit": "a" * 40},
+                "phases": [{"phase": "text", "elapsed_ms": 100}],
+            }))
+            index = root / "index.db"
+            index.write_bytes(b"index")
+            scenario = SimpleNamespace(
+                root=root, binary=Path("binary"), index=index, images=root / "images",
+                cache=root, name="persistent_text", rows=[], changed=0, count=1,
+                original_stats={}, environment={},
+                invoke=lambda *args, **kwargs: json.dumps({"exit_code": 0, "wall_ms": 5}),
+            )
+            result = sample(scenario, 0)
+            self.assertEqual(result["timing"]["environment"]["commit"], "a" * 40)
+            self.assertEqual(result["timing"]["phases"], [])
+            self.assertEqual(result["wall_ms"], 5)
+
     def test_comparison_checks_intermediate_responses(self):
         with tempfile.TemporaryDirectory() as temporary:
             missing = Path(temporary) / "absent.db"

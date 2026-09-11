@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from . import behavior
-from .storage import BENCHMARKS, write_json
+from .storage import BENCHMARKS, read_json, write_json
 
 
 def sample(scenario, index):
@@ -39,7 +39,10 @@ def sample(scenario, index):
     ))
     if metrics["exit_code"] != 0:
         raise RuntimeError(f"serve failed: {(output / 'stderr.log').read_text()[-3000:]}")
-    metrics["timing"] = {"phases": []}  # Serve does not expose internal phase timings.
+    # The seed warmup ran this same binary and supplies its compiled commit identity.
+    # Serve has no timing flags, so only provenance is reused, never phase durations.
+    warmup = read_json(scenario.root / "observations/warmup/phases.json")
+    metrics["timing"] = {"environment": warmup["environment"], "phases": []}
     metrics["index_bytes"] = scenario.index.stat().st_size
     metrics["index_bytes_per_image"] = metrics["index_bytes"] / scenario.count
     return metrics
