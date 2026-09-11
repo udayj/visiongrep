@@ -30,6 +30,8 @@ SCENARIOS = (
     "deleted_1pct",
     "renamed_1pct",
     "read_only",
+    "persistent_text",
+    "persistent_updates",
 )
 CALIBRATION = ("novel_text", "cached_text", "no_cache")
 
@@ -182,7 +184,7 @@ class Scenario:
         for row in self.rows[: self.changed]:
             path = self.images / row["file_name"]
             path.with_name("renamed-" + path.name).unlink(missing_ok=True)
-            if not path.exists() or name in ("modified_1pct", "modified_query_image"):
+            if not path.exists() or name in ("modified_1pct", "modified_query_image", "persistent_updates"):
                 shutil.copyfile(self.cache / "objects" / row["sha256"], path)
             if row["file_name"] in self.original_stats:
                 stamp = self.original_stats[row["file_name"]]
@@ -225,6 +227,10 @@ class Scenario:
         warm_files((self.root / "cache/visiongrep/models").glob("*.onnx"))
         if self.index.exists():
             warm_files([self.index])
+        if name.startswith("persistent_"):
+            from .persistent import sample
+
+            return sample(self, index)
         query = (
             f"a novel query {index}: bicycle near water"
             if name == "novel_text"

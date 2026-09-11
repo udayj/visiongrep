@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .scenarios import Scenario
 from .statistics import summary
-from .storage import BENCHMARKS, FOUNDATION, command
+from .storage import BENCHMARKS, command
 
 SYSTEM_FILES = (
     "stat", "diskstats", "meminfo", "vmstat", "loadavg", "locks",
@@ -169,7 +169,7 @@ def measure(run, binary: Path, cache: Path, corpus: dict):
                         row = scenario.sample(index)
                         row["diagnostic"]["setup_started_epoch_ns"] = started
                         rows.append(row)
-                        if row["timing"]["environment"]["commit"] != FOUNDATION:
+                        if row["timing"]["environment"]["commit"] != run.config["foundation_sha"]:
                             raise ValueError("diagnostic binary differs from pinned foundation")
                         run.save()
                         if not row["behavior"]["passed"]:

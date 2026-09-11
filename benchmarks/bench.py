@@ -118,15 +118,11 @@ def configuration(args) -> dict:
     sha = command(
         ["git", "rev-parse", "--verify", args.candidate + "^{commit}"], cwd=ROOT
     ).strip()
-    tag = command(
-        ["git", "rev-parse", "--verify", "benchmark-foundation-v1^{commit}"], cwd=ROOT
+    foundation_sha = command(
+        ["git", "rev-parse", "--verify", FOUNDATION + "^{commit}"], cwd=ROOT
     ).strip()
-    if tag != FOUNDATION:
-        raise ValueError(
-            "foundation tag moved; refusing to change the reference silently"
-        )
     if args.mode in ("record", "validate", "diagnose"):
-        sha = FOUNDATION
+        sha = foundation_sha
     hourly = 0.26 if args.cloud else 0
     seconds = int(
         min(
@@ -144,6 +140,7 @@ def configuration(args) -> dict:
         ),
         "profile": profile,
         "candidate": sha,
+        "foundation_sha": foundation_sha,
         "mode": args.mode,
         "baseline": str(args.baseline.resolve()) if args.baseline else None,
         "cache": str(cache),

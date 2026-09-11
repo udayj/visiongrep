@@ -112,8 +112,8 @@ fn prepare_text(
         None => timing.set_query_cache_state(CacheState::NotApplicable),
     }
 
-    let mut session = models.load_text(on_event, timing)?;
-    let embedding = embed_text(text, &mut session, timing)?;
+    let session = models.load_text(on_event, timing)?;
+    let embedding = embed_text(text, session, timing)?;
     if let Some(index) = index {
         let writes_started = timing.start();
         index.upsert_query_embedding(text, &embedding)?;

@@ -35,14 +35,19 @@ def main():
         epoch_ns = time.time_ns() if diagnostic else None
         monotonic_ns = time.monotonic_ns() if diagnostic else None
         started = time.perf_counter()
-        child = subprocess.run(
-            configuration["command"],
-            stdout=out,
-            stderr=err,
-            env=os.environ,
-            check=False,
-        )
-        elapsed = (time.perf_counter() - started) * 1000
+        if "persistent" in configuration:
+            # Import as a package; harness/statistics.py must not shadow stdlib statistics.
+            sys.path[0] = str(Path(__file__).resolve().parents[1])
+            from harness.persistent import run
+
+            metrics = run(configuration, out, err)
+        else:
+            child = subprocess.run(
+                configuration["command"], stdout=out, stderr=err,
+                env=os.environ, check=False,
+            )
+            metrics = {"wall_ms": (time.perf_counter() - started) * 1000,
+                       "exit_code": child.returncode}
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     rss = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024
     extra = {}
@@ -61,7 +66,7 @@ def main():
         }
     print(
         json.dumps(
-            {"wall_ms": elapsed, "peak_rss_bytes": rss, "exit_code": child.returncode, **extra}
+            {**metrics, "peak_rss_bytes": rss, **extra}
         )
     )
 

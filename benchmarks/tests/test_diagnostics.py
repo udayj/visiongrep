@@ -104,6 +104,7 @@ class DiagnosticInstrumentation(unittest.TestCase):
             root = Path(temporary)
             run = SimpleNamespace(
                 directory=root, deadline=9999999999, report={"samples": {}},
+                config={"foundation_sha": FOUNDATION},
                 profile={"batches": ["untraced", "strace"], "scenarios": ["deleted_1pct"], "samples": 2},
                 invoke=invoke, progress=lambda **kwargs: None, save=lambda: None,
                 discard_inputs=lambda scenario: None,

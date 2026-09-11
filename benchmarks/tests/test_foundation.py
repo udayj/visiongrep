@@ -43,6 +43,7 @@ class FoundationRecording(unittest.TestCase):
                     "corpus_sha256": digest(corpus),
                     "mode": mode,
                     "candidate": FOUNDATION,
+                    "foundation_sha": FOUNDATION,
                     "baseline": str(baseline) if mode == "compare" else None,
                 }
                 run = Run(config)

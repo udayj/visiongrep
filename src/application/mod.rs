@@ -10,7 +10,9 @@ use crate::index::{
     ImageFile, ImageIndex, IndexLocation, IngestEvent, SearchRoot, StagedImageIndex,
     discover_images, embed_images, ingest_into_index,
 };
-use crate::model::{ArtifactEvent, ArtifactVerification, Models, embedding_contract};
+use crate::model::{
+    ArtifactEvent, ArtifactVerification, Models, SessionLifetime, embedding_contract,
+};
 use crate::ranking::{Ranker, SearchResult};
 use crate::timing::{CacheState, Phase, TimingRecorder};
 
@@ -137,7 +139,7 @@ fn search_without_cache(
         &mut |event| on_event(SearchEvent::Artifact(event)),
         timing,
     )?;
-    Ok(rank_query(prepared, request, timing))
+    Ok(rank_query(prepared, request.top, request.threshold, timing))
 }
 
 /// Reconciles the on-disk index and loads only the model sessions required by the current state.
@@ -153,29 +155,8 @@ fn search_with_cache(
     on_event: &mut impl FnMut(SearchEvent),
     timing: &mut TimingRecorder,
 ) -> Result<Vec<SearchResult>, VisionGrepError> {
-    let detection_started = timing.start();
-    let plan = index.plan_reconciliation(files)?;
-    timing.record(Phase::ChangedMissingImageDetection, detection_started);
-    let reconciliation_started = timing.start();
-    index.apply_reconciliation(&plan)?;
-    timing.record(Phase::StaleEntryReconciliation, reconciliation_started);
-    let missing = plan.missing();
     let mut models = Models::new(request.artifact_verification);
-    if !missing.is_empty() {
-        timing.set_index_cache_state(CacheState::Changed);
-        let session = models.vision(&mut |event| on_event(SearchEvent::Artifact(event)), timing)?;
-        ingest_into_index(
-            root,
-            &mut index,
-            missing,
-            session,
-            &mut |event| {
-                on_event(SearchEvent::Index(event));
-            },
-            timing,
-        )?;
-    }
-
+    refresh_index(root, files, &mut index, &mut models, on_event, timing)?;
     search_index(
         root,
         request,
@@ -185,6 +166,96 @@ fn search_with_cache(
         on_event,
         timing,
     )
+}
+
+fn refresh_index(
+    root: &SearchRoot,
+    files: &[ImageFile],
+    index: &mut ImageIndex,
+    models: &mut Models,
+    on_event: &mut impl FnMut(SearchEvent),
+    timing: &mut TimingRecorder,
+) -> Result<(), VisionGrepError> {
+    let detection_started = timing.start();
+    let plan = index.plan_reconciliation(files)?;
+    timing.record(Phase::ChangedMissingImageDetection, detection_started);
+    let reconciliation_started = timing.start();
+    index.apply_reconciliation(&plan)?;
+    timing.record(Phase::StaleEntryReconciliation, reconciliation_started);
+    let missing = plan.missing();
+    if !missing.is_empty() {
+        timing.set_index_cache_state(CacheState::Changed);
+        let session = models.vision(&mut |event| on_event(SearchEvent::Artifact(event)), timing)?;
+        ingest_into_index(
+            root,
+            index,
+            missing,
+            session,
+            &mut |event| {
+                on_event(SearchEvent::Index(event));
+            },
+            timing,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Owns one directory's index and lazy model sessions across sequential searches.
+pub(crate) struct SearchService {
+    root: SearchRoot,
+    index: ImageIndex,
+    models: Models,
+}
+
+impl SearchService {
+    pub(crate) fn open(path: &Path, index_path: Option<&Path>) -> Result<Self, VisionGrepError> {
+        validate_search_path(path)?;
+        let root = SearchRoot::resolve(path)?;
+        let location = IndexLocation::resolve(root.filesystem_path(), index_path)?;
+        let index = ImageIndex::open(&location, root.filesystem_path(), embedding_contract())?;
+        Ok(Self {
+            root,
+            index,
+            models: Models::with_lifetime(ArtifactVerification::Fast, SessionLifetime::Process),
+        })
+    }
+
+    pub(crate) fn search(
+        &mut self,
+        query: &Query,
+        top: usize,
+        threshold: f32,
+        on_event: &mut impl FnMut(SearchEvent),
+        timing: &mut TimingRecorder,
+    ) -> Result<Vec<SearchResult>, VisionGrepError> {
+        validate_search_path(self.root.filesystem_path())?;
+        let query = query.resolve()?;
+        let started = timing.start();
+        let files = discover_images(&self.root)?;
+        timing.record(Phase::RecursiveDiscoveryMetadata, started);
+        timing.set_corpus_size(files.len());
+        refresh_index(
+            &self.root,
+            &files,
+            &mut self.index,
+            &mut self.models,
+            on_event,
+            timing,
+        )?;
+        let started = timing.start();
+        let images = self.index.all_embeddings(self.root.display_path())?;
+        timing.record(Phase::CachedVectorLoadingDeserialization, started);
+        let prepared = query.prepare(
+            &self.root,
+            images,
+            Some(&mut self.index),
+            &mut self.models,
+            &mut |event| on_event(SearchEvent::Artifact(event)),
+            timing,
+        )?;
+        Ok(rank_query(prepared, top, threshold, timing))
+    }
 }
 
 /// Builds a complete sibling database and exposes it only after every image was processed.
@@ -258,18 +329,19 @@ fn search_index(
         &mut |event| on_event(SearchEvent::Artifact(event)),
         timing,
     )?;
-    Ok(rank_query(prepared, request, timing))
+    Ok(rank_query(prepared, request.top, request.threshold, timing))
 }
 
 fn rank_query(
     prepared: Option<PreparedQuery>,
-    request: &SearchRequest,
+    top: usize,
+    threshold: f32,
     timing: &mut TimingRecorder,
 ) -> Vec<SearchResult> {
     let Some(prepared) = prepared else {
         return Vec::new();
     };
-    Ranker::new(&prepared.embedding, request.top, request.threshold).rank(prepared.images, timing)
+    Ranker::new(&prepared.embedding, top, threshold).rank(prepared.images, timing)
 }
 
 fn validate_search_path(path: &Path) -> Result<(), VisionGrepError> {

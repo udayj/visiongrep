@@ -11,6 +11,8 @@
     "novel_text",
     "cached_text",
     "indexed_image",
-    "modified_1pct"
+    "modified_1pct",
+    "persistent_text",
+    "persistent_updates"
   ]
 }

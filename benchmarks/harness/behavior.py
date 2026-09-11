@@ -88,6 +88,17 @@ def compare(reference, candidate, reference_index, candidate_index):
         for a, b in zip(left, right)
     ):
         reasons.append("scenario scores differ beyond tolerance")
+    left_requests = reference.get("requests", [])
+    right_requests = candidate.get("requests", [])
+    if len(left_requests) != len(right_requests):
+        reasons.append("persistent request counts differ")
+    for left_request, right_request in zip(left_requests, right_requests):
+        a, b = left_request["results"], right_request["results"]
+        if (left_request["id"] != right_request["id"]
+            or [row["path"] for row in a] != [row["path"] for row in b]
+            or any(not math.isfinite(y["score"]) or abs(x["score"] - y["score"]) > 1e-4
+                   for x, y in zip(a, b))):
+            reasons.append("persistent request rankings or scores differ")
     if reference_index.exists() != candidate_index.exists():
         reasons.append("scenario index presence differs")
     elif reference_index.exists():

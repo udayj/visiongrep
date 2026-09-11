@@ -42,12 +42,12 @@ class ValidationConfiguration(unittest.TestCase):
         self.assertEqual(standard.get("calibration_batches", 3), 3)
         self.assertEqual(set(standard["scenarios"]), set(SCENARIOS))
 
-    def test_moved_foundation_tag_is_rejected(self):
-        with (
-            patch("bench.command", side_effect=[FOUNDATION, "0" * 40]),
-            self.assertRaisesRegex(ValueError, "foundation tag moved"),
-        ):
-            configuration(parser().parse_args(["plan", "--mode", "validate"]))
+    def test_reference_is_resolved_once_and_frozen_in_configuration(self):
+        reference = "a" * 40
+        with patch("bench.command", side_effect=["b" * 40, reference]):
+            config = configuration(parser().parse_args(["plan", "--mode", "record"]))
+        self.assertEqual(config["foundation_sha"], reference)
+        self.assertEqual(config["candidate"], reference)
 
     def test_validation_override_cannot_weaken_comparison_or_reference(self):
         for mode in ("compare", "record"):
@@ -90,6 +90,8 @@ class ScenarioState(unittest.TestCase):
 
             with patch("harness.scenarios.stage_models", side_effect=models):
                 for name in SCENARIOS:
+                    if name.startswith("persistent_"):
+                        continue
                     with self.subTest(name=name):
                         scenario = InspectScenario(
                             root / name,

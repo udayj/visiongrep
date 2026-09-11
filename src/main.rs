@@ -13,7 +13,7 @@ mod timing;
 use clap::Parser;
 
 use crate::application::search;
-use crate::cli::{Cli, Terminal};
+use crate::cli::{Cli, Subcommands, Terminal};
 use crate::error::VisionGrepError;
 use crate::timing::{Phase, TimingRecorder};
 
@@ -30,9 +30,17 @@ fn main() {
 }
 
 fn run() -> Result<ExitStatus, VisionGrepError> {
-    let command = Cli::parse()
-        .into_command()
-        .unwrap_or_else(|error| error.exit());
+    let mut cli = Cli::parse();
+    if let Some(Subcommands::Serve {
+        path, index_path, ..
+    }) = cli.subcommand.take()
+    {
+        return preserve_status_on_broken_pipe(
+            ExitStatus::Found,
+            crate::cli::serve(&path, index_path.as_deref()),
+        );
+    }
+    let command = cli.into_command().unwrap_or_else(|error| error.exit());
     let mut timing = TimingRecorder::new(
         command.timing_destination.is_some(),
         crate::model::timing_metadata(),

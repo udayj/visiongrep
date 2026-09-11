@@ -14,7 +14,6 @@ from pathlib import Path
 
 from .storage import (
     BENCHMARKS,
-    FOUNDATION,
     ROOT,
     command,
     digest,
@@ -157,7 +156,7 @@ def launch(config: dict, settings_path: Path) -> dict:
             shutil.copyfile(config["corpus"], staging / "corpus.json")
             if config.get("baseline"):
                 shutil.copyfile(config["baseline"], staging / "baseline.json")
-            commits = {"foundation": FOUNDATION}
+            commits = {"foundation": config["foundation_sha"]}
             if config["mode"] not in ("record", "diagnose"):
                 commits["candidate"] = config["candidate"]
             for role, sha in commits.items():

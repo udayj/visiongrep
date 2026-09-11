@@ -47,6 +47,9 @@ pub(crate) enum EmbeddingError {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VisionGrepError {
+    #[error("stdio request exceeds {limit} bytes")]
+    StdioRequestTooLarge { limit: u64 },
+
     #[error("failed to download {artifact} from {url}: {source}")]
     DownloadRequest {
         artifact: &'static str,
