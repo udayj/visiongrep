@@ -70,6 +70,10 @@ def parser():
         run.add_argument("--wait", action="store_true", help="cloud only: wait for termination and collect using this authenticated session")
     worker = sub.add_parser("worker", help=argparse.SUPPRESS)
     worker.add_argument("--config", required=True, type=Path)
+    analysis = sub.add_parser("reanalyze", help="recalculate raw measurements without rewriting the recording")
+    analysis.add_argument("run", type=Path)
+    analysis.add_argument("--output", required=True, type=Path)
+    analysis.add_argument("--baseline", type=Path)
     aggregate = sub.add_parser(
         "foundation", help="freeze calibrated reference from >=3 record sessions"
     )
@@ -233,6 +237,8 @@ def main():
         print(result)
         if result in ("invalid", "cancelled", "validation_failed"):
             raise SystemExit(2)
+    elif args.action == "reanalyze":
+        print(runner.reanalyze(args.run, outside_repository(args.output), args.baseline))
     elif args.action == "foundation":
         result = runner.foundation(args.runs, outside_repository(args.output))
         if result:

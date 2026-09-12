@@ -1,6 +1,6 @@
 {
   "name": "cloud-scale",
-  "samples": 3,
+  "samples": 9,
   "corpus_size": 10000,
   "cloud": true,
   "quality": false,

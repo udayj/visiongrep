@@ -279,14 +279,14 @@ class SuiteQualification(unittest.TestCase):
             run.report["quality_comparison"] = {"passed": quality_ok}
             for name in SCENARIOS:
                 run.report["samples"][name] = {}
-                for role in ("foundation", "candidate"):
+                for role in (["foundation"] if mode == "record" else ["foundation", "candidate"]):
                     sample = {
                         "wall_ms": 90
                         if role == "candidate" and name == "index_absent"
                         else 100,
                         "peak_rss_bytes": 1000,
                         "timing": {"phases": []},
-                        "behavior": {"passed": True, "reasons": []},
+                        "behavior": {"passed": behavior_ok, "reasons": [] if behavior_ok else ["bad output"]},
                         "behavior_comparison": {
                             "passed": behavior_ok,
                             "reasons": []

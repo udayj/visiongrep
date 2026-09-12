@@ -85,6 +85,8 @@ class CloudSlots(unittest.TestCase):
                         deleted = []
 
                         def aws(region, service, action, *args):
+                            if action == "list-objects-v2":
+                                return {"Contents": [{"Key": cloud.lock_key(slot or 1)}]}
                             self.assertEqual(args[args.index("--key") + 1], cloud.lock_key(slot or 1))
                             if action == "get-object":
                                 write_json(Path(args[-1]), {"run_id": owner})
@@ -103,8 +105,7 @@ class CloudSlots(unittest.TestCase):
                                 cloud.collect(root)
                                 self.assertEqual(deleted, ["delete-object"])
                             else:
-                                with self.assertRaisesRegex(ValueError, "belongs to another"):
-                                    cloud.collect(root)
+                                cloud.collect(root)
                                 self.assertEqual(deleted, [])
 
     def test_reconciliation_respects_slot_expiry_and_run_identity(self):

@@ -24,11 +24,14 @@ pre{white-space:pre-wrap;background:#f4f6f8;padding:20px}h1{font-size:28px}</sty
     value += "<p>" + html.escape("; ".join(report.get("reasons", []))) + "</p>"
     estimates = report.get("timing_screen", {}).get("estimates", {})
     if estimates:
-        value += "<h2>Local median uncertainty and batch stability</h2>"
-        value += "<p>Approximate bootstrap intervals; local screening only. Raw CV is diagnostic.</p>"
+        value += "<h2>Median uncertainty and batch stability</h2>"
+        value += "<p>Approximate block-bootstrap intervals. Raw CV and p95 are diagnostics.</p>"
         value += "<table><tr><th>Scenario / binary</th><th>Median ms</th><th>95% interval ms</th><th>Max batch deviation</th><th>Raw CV</th></tr>"
         for name, roles in estimates.items():
             for role, info in roles.items():
+                if info["median_interval_ms"] is None:
+                    value += f"<tr><td>{html.escape(name)} / {html.escape(role)}</td><td colspan=4>Insufficient samples for precision and drift</td></tr>"
+                    continue
                 lo, hi = info["median_interval_ms"]
                 value += (
                     f"<tr><td>{html.escape(name)} / {html.escape(role)}</td>"
