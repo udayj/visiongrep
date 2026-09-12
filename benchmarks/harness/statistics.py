@@ -27,31 +27,29 @@ def summary(values: list[float]) -> dict:
     }
 
 
+def blocks(values):
+    """Consecutive triples preserve short-range dependence and pair alignment."""
+    return [values[i:i + 3] for i in range(0, len(values), 3)]
+
+
 def paired(reference: list[float], candidate: list[float], alpha: float = 0.05) -> dict:
-    if (
-        len(reference) != len(candidate)
-        or not reference
-        or any(x <= 0 for x in reference)
-    ):
-        raise ValueError(
-            "comparison requires equal nonempty pairs and positive reference times"
-        )
-    improvements = [1 - c / r for r, c in zip(reference, candidate)]
+    summary(reference)
+    summary(candidate)
+    if len(reference) != len(candidate) or any(x <= 0 for x in reference + candidate):
+        raise ValueError("comparison requires equal nonempty pairs and positive values")
+    improvement = 1 - statistics.median(candidate) / statistics.median(reference)
+    enough = len(reference) >= 9 and len(reference) % 3 == 0
+    if not enough:
+        raise ValueError("paired precision requires at least nine samples in complete triples")
+    grouped = blocks(list(zip(reference, candidate)))
     rng = random.Random(73421)
-    resamples = [
-        statistics.median(rng.choices(improvements, k=len(improvements)))
-        for _ in range(5000)
-    ]
-    return {
-        "improvement": statistics.median(improvements),
-        "interval": [
-            percentile(resamples, alpha / 2),
-            percentile(resamples, 1 - alpha / 2),
-        ],
-        "pairs": len(improvements),
-        "method": "paired median-ratio percentile bootstrap",
-        "alpha": alpha,
-    }
+    resamples = []
+    for _ in range(5000):
+        pairs = [pair for block in rng.choices(grouped, k=len(grouped)) for pair in block]
+        resamples.append(1 - statistics.median([c for r, c in pairs]) / statistics.median([r for r, c in pairs]))
+    return {"improvement": improvement,
+            "interval": [percentile(resamples, alpha / 2), percentile(resamples, 1 - alpha / 2)],
+            "pairs": len(reference), "method": "paired block bootstrap of ratio of medians", "alpha": alpha}
 
 
 def verdict(

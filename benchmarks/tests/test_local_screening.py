@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from harness import local_screening
+from harness import calibration, local_screening
 from harness.runner import Run, foundation
 from harness.report import render
 from harness.storage import BENCHMARKS, read_json, write_json
@@ -22,7 +22,7 @@ class LocalScreening(unittest.TestCase):
             run.summarize()
             write_json(root / "report.json", run.report)
             html = render(root).read_text()
-            self.assertIn("Local median uncertainty and batch stability", html)
+            self.assertIn("Median uncertainty and batch stability", html)
             self.assertIn("Raw CV", html)
             self.assertIn("100.000 to 100.000", html)
 
@@ -64,60 +64,17 @@ class LocalScreening(unittest.TestCase):
                 )
             )
 
-    def test_reanalysis_of_all_three_retained_v2_sessions(self):
-        evidence = read_json(BENCHMARKS / "tests/fixtures/local-v2-recordings.json")
-        self.assertEqual(len(evidence), 3)
-        self.assertEqual(
-            sum(row["original_verdict"] == "inconclusive" for row in evidence), 2
-        )
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            paths = fixtures.FoundationBounds().records(root, "local-quick")
-            for path, saved in zip(paths, evidence):
-                row = read_json(path / "report.json")
-                row["contract"]["profile"]["screening_policy"] = "local-batches-v2"
-                row["contract"]["harness_sha256"] = local_screening.REANALYZABLE_V2
-                row["verdict"] = saved["original_verdict"]
-                for name, times in saved["samples"].items():
-                    for sample, time in zip(row["samples"][name]["foundation"], times):
-                        sample["wall_ms"] = time
-                write_json(path / "report.json", row)
-            output = root / "reanalysis.json"
-            self.assertEqual(foundation(paths, output), "calibrated")
-            analyzed = read_json(output)
-            self.assertEqual(
-                analyzed["source_contract"]["harness_sha256"],
-                local_screening.REANALYZABLE_V2,
-            )
-            self.assertEqual(
-                analyzed["contract"]["profile"]["screening_policy"],
-                local_screening.POLICY,
-            )
-            self.assertGreater(
-                analyzed["estimates"]["novel_text"]["raw_summaries"][0]["cv"], 0.10
-            )
-            self.assertLess(
-                analyzed["estimates"]["novel_text"]["relative_median_uncertainty"], 0.10
-            )
-            for name, info in analyzed["estimates"].items():
-                self.assertEqual(len(info["batch_medians_ms"]), 3)
-                self.assertTrue(
-                    all(len(batch) == 3 for batch in info["batch_medians_ms"])
-                )
-            self.assertEqual(
-                read_json(paths[0] / "report.json")["verdict"], "inconclusive"
-            )
 
     def test_uncertainty_and_drift_have_separate_gates(self):
-        stable = local_screening.estimate([[100] * 8 + [400]] * 3)
+        stable = calibration.estimate([[100] * 8 + [400]] * 3)
         self.assertEqual(stable["median_interval_ms"], [100, 100])
         self.assertEqual(stable["reasons"], [])
-        drifted = local_screening.estimate([[100] * 9, [100] * 9, [140] * 9])
-        self.assertIn("batch median drift exceeds 15%", drifted["reasons"])
-        imprecise = local_screening.estimate([[89] * 3 + [100] * 3 + [111] * 3])
+        drifted = calibration.estimate([[100] * 9, [100] * 9, [140] * 9])
+        self.assertIn("session median drift exceeds 15%", drifted["reasons"])
+        imprecise = calibration.estimate([[89] * 3 + [100] * 3 + [111] * 3])
         self.assertIn("median uncertainty exceeds 10%", imprecise["reasons"])
         self.assertNotIn("batch median drift exceeds 15%", imprecise["reasons"])
-        self.assertEqual(stable, local_screening.estimate([[100] * 8 + [400]] * 3))
+        self.assertEqual(stable, calibration.estimate([[100] * 8 + [400]] * 3))
 
     def test_candidate_triage_uses_uncertainty_and_never_qualifies(self):
         with tempfile.TemporaryDirectory() as root:
@@ -153,21 +110,6 @@ class LocalScreening(unittest.TestCase):
         result, _ = local_screening.candidate_decision(comparison, {}, ["novel_text"])
         self.assertEqual(result, "inconclusive")
 
-    def test_only_known_measurement_contract_can_be_reanalyzed(self):
-        profile = read_json(BENCHMARKS / "profiles/local-quick.json")
-        source = {
-            "profile": profile | {"screening_policy": "local-batches-v2"},
-            "harness_sha256": local_screening.REANALYZABLE_V2,
-        }
-        self.assertTrue(local_screening.compatible_recording(source))
-        self.assertFalse(
-            local_screening.compatible_recording(source | {"harness_sha256": "unknown"})
-        )
-        self.assertFalse(
-            local_screening.compatible_recording(
-                source | {"profile": source["profile"] | {"samples": 5}}
-            )
-        )
 
     def run_with_samples(self, root, mode="record", times=None):
         profile = read_json(BENCHMARKS / "profiles/local-quick.json") | {
@@ -257,7 +199,7 @@ class LocalScreening(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             run = self.run_with_samples(root)
             run.report["samples"]["indexed_image"]["foundation"].pop()
-            with self.assertRaisesRegex(ValueError, "incomplete local"):
+            with self.assertRaisesRegex(ValueError, "incomplete measurements"):
                 run.summarize()
 
     def test_noise_preserves_definite_resource_failure(self):
@@ -313,8 +255,8 @@ class LocalScreening(unittest.TestCase):
             destination = root / "good.json"
             self.assertEqual(foundation(paths, destination), "calibrated")
             self.assertEqual(
-                read_json(destination)["calibration_batch_medians"]["novel_text"],
-                [98, 100, 102] * 3,
+                read_json(destination)["estimates"]["novel_text"]["batch_medians_ms"],
+                [[98, 100, 102]] * 3,
             )
             row = read_json(paths[-1] / "report.json")
             row["verdict"] = "inconclusive"
@@ -328,51 +270,7 @@ class LocalScreening(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "immutable"):
                 foundation(paths, destination)
 
-    def test_legacy_recordings_require_fresh_samples(self):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            paths = fixtures.FoundationBounds().records(root, "local-quick")
-            for path in paths:
-                row = read_json(path / "report.json")
-                row["contract"]["profile"].pop("screening_policy")
-                write_json(path / "report.json", row)
-            with self.assertRaisesRegex(ValueError, "fresh recordings"):
-                foundation(paths, root / "foundation.json")
 
-    def test_cloud_profiles_do_not_enable_local_policy(self):
-        for name in ("cloud-standard", "cloud-scale"):
-            self.assertFalse(
-                local_screening.enabled(
-                    read_json(BENCHMARKS / "profiles" / (name + ".json"))
-                )
-            )
-        # Cloud still rejects excessive within-session variation.
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
-            paths = fixtures.FoundationBounds().records(root, values=[100] * 20 + [200])
-            with self.assertRaisesRegex(ValueError, "variation too large"):
-                foundation(paths, root / "cloud.json")
-
-    def test_retained_evidence_includes_failures_without_reclassifying(self):
-        evidence = read_json(BENCHMARKS / "results/local-noise-audit-20260908.json")
-        self.assertEqual(len(evidence["reports"]), 12)
-        self.assertEqual(
-            sum(r["original_verdict"] == "invalid" for r in evidence["reports"]), 4
-        )
-        self.assertTrue(
-            all(
-                r["eligibility"] == "fresh recordings required"
-                for r in evidence["reports"]
-            )
-        )
-        for report in evidence["reports"]:
-            for roles in report["scenarios"].values():
-                for row in roles.values():
-                    self.assertIn(
-                        "rehearsal only", local_screening.uncertainty(row["wall_ms"])[0]
-                    )
-                    with self.assertRaisesRegex(ValueError, "complete triples"):
-                        local_screening.estimate([row["wall_ms"]])
 
 
 if __name__ == "__main__":

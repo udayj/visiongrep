@@ -372,10 +372,16 @@ def status(directory: Path) -> dict:
         handle["region"],
         "ec2",
         "describe-instances",
-        "--instance-ids",
-        handle["instance_id"],
+        "--filters",
+        json.dumps([{"Name": "instance-id", "Values": [handle["instance_id"]]}]),
     )
-    state = result["Reservations"][0]["Instances"][0]["State"]["Name"]
+    instances = [
+        instance
+        for reservation in result["Reservations"]
+        for instance in reservation["Instances"]
+    ]
+    # EC2 eventually removes terminated instances; their S3 recordings remain.
+    state = instances[0]["State"]["Name"] if instances else "not_found"
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "status.json"
         try:
@@ -413,7 +419,7 @@ def collect(directory: Path, cancel=False):
             handle["instance_id"],
         )
     state = status(directory)["instance_state"]
-    if state != "terminated":
+    if state not in ("terminated", "not_found"):
         raise ValueError(
             "instance is not yet terminated; retry collect once termination finishes"
         )
@@ -432,6 +438,13 @@ def collect(directory: Path, cancel=False):
         ],
         timeout=600,
     )
+    key = lock_key(handle.get("cloud_slot", 1))
+    objects = aws(
+        region, "s3api", "list-objects-v2",
+        "--bucket", handle["bucket"], "--prefix", key,
+    )
+    if not any(item["Key"] == key for item in objects.get("Contents", [])):
+        return
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "lock.json"
         lease = aws(
@@ -445,7 +458,7 @@ def collect(directory: Path, cancel=False):
             str(path),
         )
         if read_json(path)["run_id"] != handle["run_id"]:
-            raise ValueError("cloud lock belongs to another run; refusing to clear it")
+            return  # A later run owns this slot; leave its lease intact.
         aws(
             region,
             "s3api",

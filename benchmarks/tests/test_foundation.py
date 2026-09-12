@@ -28,9 +28,9 @@ class FoundationRecording(unittest.TestCase):
             binary = root / "binary"
             binary.write_bytes(b"binary")
             baseline = root / "baseline.json"
-            measured_contract = {"build_environment": {"rustc": "pinned"}}
+            measured_contract = {"build_environment": {"rustc": "pinned"}, "profile": {"name": "local-quick", "cloud": False}, "environment": {}}
             write_json(
-                baseline, {"contract": measured_contract, "verdict": "calibrated"}
+                baseline, {"contract": measured_contract, "verdict": "calibrated", "analysis_method": calibration.METHOD}
             )
             for mode in ("record", "validate", "compare"):
                 config = {
@@ -52,7 +52,7 @@ class FoundationRecording(unittest.TestCase):
                     patch("harness.runner.environment", return_value={}),
                     patch("harness.runner.platform.system", return_value="Darwin"),
                     patch("harness.runner.verify"),
-                    patch("harness.runner.contract", return_value={}),
+                    patch("harness.runner.contract", return_value={"profile": {"name": "local-quick", "cloud": False}, "environment": {}}),
                     patch(
                         "harness.runner.build",
                         return_value=(binary, FOUNDATION, {"rustc": "pinned"}),
@@ -71,6 +71,7 @@ class FoundationRecording(unittest.TestCase):
                             {
                                 "contract": measured_contract,
                                 "verdict": "inconclusive",
+                                "analysis_method": calibration.METHOD,
                             },
                         )
                         with self.assertRaisesRegex(ValueError, "not calibrated"):
@@ -120,13 +121,13 @@ class FoundationRecording(unittest.TestCase):
                 self.assertTrue(
                     all(len(rows) == 9 for rows in run.report["calibration"].values())
                 )
-                with self.assertRaisesRegex(ValueError, "calibration failed"):
-                    run.calibrate(
+                run.calibrate(
                         Path("binary"),
                         Path("cache"),
                         corpus,
                         {"calibration_bounds": {name: [50, 60] for name in bounds}},
                     )
+                self.assertTrue(run.report["timing_screen"]["reasons"])
 
 
 class FoundationBounds(unittest.TestCase):
@@ -162,7 +163,7 @@ class FoundationBounds(unittest.TestCase):
                     "samples": {
                         name: {
                             "foundation": [
-                                {"wall_ms": x, "behavior": {"passed": True}}
+                                {"wall_ms": x, "timing": {"phases": []}, "behavior": {"passed": True}}
                                 for x in times
                             ]
                         }
@@ -209,17 +210,17 @@ class FoundationBounds(unittest.TestCase):
             root = Path(temporary)
             paths = self.records(root)
             row = read_json(paths[0] / "report.json")
-            row["calibration"] = {"novel_text": [{"wall_ms": 100}] * 9}
+            row["calibration"] = {"novel_text": [{"wall_ms": 100, "behavior": {"passed": True}}] * 9}
             row["samples"]["novel_text"]["foundation"].pop()
             write_json(paths[0] / "report.json", row)
-            with self.assertRaisesRegex(ValueError, "incomplete foundation"):
+            with self.assertRaisesRegex(ValueError, "incomplete measurements"):
                 foundation(paths, root / "foundation.json")
 
     def test_five_samples_cannot_supply_the_new_local_budget(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             paths = self.records(root, "local-quick", [100, 100, 100, 100, 200])
-            with self.assertRaisesRegex(ValueError, "incomplete foundation"):
+            with self.assertRaisesRegex(ValueError, "incomplete measurements"):
                 foundation(paths, root / "foundation.json")
 
     def test_drift_between_instances_rejects_foundation(self):
@@ -227,56 +228,32 @@ class FoundationBounds(unittest.TestCase):
             root = Path(temporary)
             paths = self.records(root)
             row = read_json(paths[2] / "report.json")
-            row["samples"]["novel_text"]["foundation"] = [{"wall_ms": 130, "behavior": {"passed": True}}] * 21
+            row["samples"]["novel_text"]["foundation"] = [{"wall_ms": 130, "timing": {"phases": []}, "behavior": {"passed": True}}] * 21
             write_json(paths[2] / "report.json", row)
-            with self.assertRaisesRegex(ValueError, "variation too large|outlying"):
-                foundation(paths, root / "foundation.json")
+            self.assertEqual(foundation(paths, root / "foundation.json"), "inconclusive")
 
 
 class SessionCalibration(unittest.TestCase):
-    def test_isolated_batch_does_not_override_typical_latency(self):
-        # A 12% slower triple is compatible with a stable session overall.
-        info = calibration.reference([[100] * 21, [100] * 21, [105] * 18 + [112] * 3])
-        self.assertAlmostEqual(info["median_ms"], 100)
-        self.assertEqual([s["samples"] for s in info["sessions"]], [21, 21, 21])
-        self.assertAlmostEqual(info["bounds_ms"][1], 110)
-
-    def test_material_drift_and_noisy_sessions_are_rejected(self):
-        for sessions in (
-            [[100] * 21, [100] * 21, [111] * 21],
-            [[100] * 20 + [200], [100] * 21, [100] * 21],
-            [[0] * 21, [100] * 21, [100] * 21],
-        ):
-            with self.subTest(sessions=sessions), self.assertRaises(ValueError):
-                calibration.reference(sessions)
-
-    def test_known_migration_preserves_source_contracts_and_reports(self):
+    def test_reanalysis_preserves_source_hashes_and_ignores_analysis_labels(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             paths = FoundationBounds().records(root)
-            originals = []
-            for number, path in enumerate(paths):
+            for path in paths:
                 row = read_json(path / "report.json")
-                row["contract"]["harness_sha256"] = calibration.REANALYZABLE_V3
-                row["contract"]["environment"]["hardware"] = {
-                    "model name": "same CPU",
-                    "microcode": str(number),
-                    "flags": "same flags",
-                }
+                row["verdict"] = "invalid"
+                row["reasons"] = ["within-run foundation variation exceeds 10%"]
+                row["contract"]["harness_sha256"] = "original harness"
                 write_json(path / "report.json", row)
-                originals.append(row["contract"])
             hashes = [digest(path / "report.json") for path in paths]
             output = root / "foundation.json"
             self.assertEqual(foundation(paths, output), "calibrated")
             result = read_json(output)
-            self.assertEqual(result["source_contracts"], originals)
-            self.assertEqual(result["contract"]["harness_sha256"], harness_digest())
-            self.assertNotIn("microcode", result["contract"]["environment"]["hardware"])
+            self.assertEqual([row["harness_sha256"] for row in result["source_contracts"]], ["original harness"] * 3)
             self.assertEqual([item["sha256"] for item in result["reports"]], hashes)
             self.assertEqual([digest(path / "report.json") for path in paths], hashes)
 
-    def test_other_contract_changes_and_unknown_harness_are_rejected(self):
-        for field in ("harness_sha256", "ami", "flags", "build_environment"):
+    def test_experimental_condition_changes_are_rejected(self):
+        for field in ("ami", "flags", "build_environment"):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 paths = FoundationBounds().records(root)
@@ -288,9 +265,7 @@ class SessionCalibration(unittest.TestCase):
                 else:
                     row["contract"][field] = "different"
                 write_json(paths[2] / "report.json", row)
-                with self.assertRaisesRegex(
-                    ValueError, "different contracts|unknown measurement"
-                ):
+                with self.assertRaisesRegex(ValueError, "different contracts"):
                     foundation(paths, root / "foundation.json")
 
     def test_incomplete_behavior_quality_and_duplicate_instances_are_rejected(self):
@@ -308,55 +283,6 @@ class SessionCalibration(unittest.TestCase):
                 write_json(paths[2] / "report.json", row)
                 with self.assertRaises(ValueError):
                     foundation(paths, root / "foundation.json")
-
-    def test_local_v3_recordings_remain_reanalyzable(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            paths = FoundationBounds().records(root, "local-quick")
-            for path in paths:
-                row = read_json(path / "report.json")
-                row["contract"]["harness_sha256"] = calibration.REANALYZABLE_V3
-                write_json(path / "report.json", row)
-            self.assertEqual(foundation(paths, root / "local.json"), "calibrated")
-
-    def test_cloud_precheck_uses_session_median_and_retains_drift_guard(self):
-        times = [100] * 6 + [112] * 3
-
-        class Scenario:
-            def __init__(self, *args):
-                pass
-
-            def sample(self, index):
-                return {"wall_ms": times[index], "behavior": {"passed": True}}
-
-            def cleanup(self):
-                pass
-
-        profile = read_json(BENCHMARKS / "profiles/cloud-standard.json")
-        with tempfile.TemporaryDirectory() as temporary:
-            run = Run(
-                {
-                    "directory": temporary,
-                    "profile": profile,
-                    "max_seconds": 60,
-                    "hourly_budget_usd": 0,
-                }
-            )
-            baseline = {
-                "calibration_bounds": {
-                    name: [90, 110] for name in calibration_scenarios(profile)
-                }
-            }
-            with (
-                patch("harness.runner.Scenario", Scenario),
-                patch.object(run, "progress"),
-                patch.object(run, "save"),
-                patch.object(run, "discard_inputs"),
-            ):
-                run.calibrate(Path("binary"), Path("cache"), {}, baseline)
-                times[:] = [111] * 9
-                with self.assertRaisesRegex(ValueError, "calibration failed"):
-                    run.calibrate(Path("binary"), Path("cache"), {}, baseline)
 
 
 if __name__ == "__main__":

@@ -106,12 +106,8 @@ class Run:
             "quality": {},
             "comparisons": {},
         }
-        if local_screening.enabled(self.profile):
-            self.report["schema_version"] = 3
-            self.report["timing_screen"] = {
-                "policy": local_screening.POLICY,
-                "reasons": [],
-            }
+        self.report["schema_version"] = 4
+        self.report["timing_screen"] = {"method": calibration.METHOD, "reasons": []}
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.heartbeat, daemon=True)
 
@@ -290,10 +286,12 @@ class Run:
                 raise ValueError(
                     "comparison requires a calibrated foundation; run validate or record first"
                 )
-            if baseline["contract"] != self.report["contract"]:
+            if calibration.measurement_contract(baseline["contract"]) != calibration.measurement_contract(self.report["contract"]):
                 raise ValueError(
                     "foundation measurement contract differs; recalibration is required"
                 )
+            if baseline.get("analysis_method") != calibration.METHOD:
+                raise ValueError("reanalyze foundation with the current analysis method")
             if baseline.get("verdict") != "calibrated":
                 raise ValueError(
                     "foundation is not calibrated; reaggregate recording sessions"
@@ -339,34 +337,17 @@ class Run:
             finally:
                 scenario.cleanup()
                 self.discard_inputs(scenario)
-            if local_screening.enabled(self.profile):
-                times = [x["wall_ms"] for x in values]
-                info = local_screening.estimate([times])
-                self.report["timing_screen"].setdefault("calibration", {})[name] = info
-                reasons = list(info["reasons"])
-                if baseline:
-                    lo, hi = baseline["calibration_bounds"][name]
-                    if not lo <= info["median_ms"] <= hi:
-                        reasons.append(
-                            "foundation median drift outside reference uncertainty and 10% margin"
-                        )
-                self.report["timing_screen"]["reasons"].extend(
-                    f"calibration/{name}: {reason}" for reason in reasons
-                )
-                continue
             times = [x["wall_ms"] for x in values]
-            info = summary(times)
-            stable = (
-                all(value > 0 for value in times)
-                and info["cv"] <= calibration.MAX_VARIATION
-            )
+            info = calibration.estimate([times])
+            self.report["timing_screen"].setdefault("calibration", {})[name] = info
+            reasons = list(info["reasons"])
             if baseline:
                 lo, hi = baseline["calibration_bounds"][name]
-                stable &= lo <= info["median"] <= hi
-            if not stable:
-                raise ValueError(
-                    f"foundation calibration failed for {name}; retain run, investigate drift"
-                )
+                if not lo <= info["median_ms"] <= hi:
+                    reasons.append("foundation median drift outside reference 10% margin")
+            self.report["timing_screen"]["reasons"].extend(
+                f"calibration/{name}: {reason}" for reason in reasons
+            )
 
     def measure(self, binaries: dict, identities: dict, cache: Path, corpus: dict):
         for name in self.profile["scenarios"]:
@@ -450,14 +431,6 @@ class Run:
                     instance.cleanup()
                     self.discard_inputs(instance)
         self.summarize()
-        if not local_screening.enabled(self.profile) and any(
-            summary([v["wall_ms"] for v in by_binary["foundation"]])["cv"] > 0.10
-            for by_binary in self.report["samples"].values()
-        ):
-            self.report.update(
-                verdict="invalid",
-                reasons=["within-run foundation variation exceeds 10%"],
-            )
 
     def discard_inputs(self, scenario):
         for name in ("images", "cache"):
@@ -466,19 +439,21 @@ class Run:
 
     def summarize(self):
         config = self.config
-        if local_screening.enabled(self.profile):
-            roles = (
-                {"foundation"}
-                if config["mode"] == "record"
-                else {"foundation", "candidate"}
-            )
-            for name in self.profile["scenarios"]:
-                observations = self.report["samples"].get(name, {})
-                if set(observations) != roles or any(
-                    len(rows) != self.profile["samples"]
-                    for rows in observations.values()
-                ):
-                    raise ValueError(f"incomplete local measurements for {name}")
+        roles = (
+            {"foundation"}
+            if config["mode"] == "record"
+            else {"foundation", "candidate"}
+        )
+        if set(self.report["samples"]) != set(self.profile["scenarios"]):
+            raise ValueError("incomplete or unexpected measurement scenarios")
+        for name in self.profile["scenarios"]:
+            observations = self.report["samples"].get(name, {})
+            if set(observations) != roles or any(
+                len(rows) != self.profile["samples"]
+                for rows in observations.values()
+            ):
+                raise ValueError(f"incomplete measurements for {name}")
+        self.report["analysis_method"] = calibration.METHOD
         self.report["summaries"] = {}
         self.report["resource_comparisons"] = {}
         behavior_failures = []
@@ -548,7 +523,7 @@ class Run:
                     for phase in phases
                 }
                 self.report["summaries"][name][key] = aggregated
-            if "candidate" in by_binary:
+            if "candidate" in by_binary and len(by_binary["foundation"]) >= 9 and len(by_binary["foundation"]) % 3 == 0:
                 self.report["comparisons"][name] = paired(
                     [x["wall_ms"] for x in by_binary["foundation"]],
                     [x["wall_ms"] for x in by_binary["candidate"]],
@@ -674,10 +649,9 @@ class Run:
                 }[config["mode"]],
                 reasons=existing_failures + behavior_failures,
             )
-        if local_screening.enabled(self.profile):
-            self.screen_local()
+        self.screen_timing()
 
-    def screen_local(self):
+    def screen_timing(self):
         screen = self.report["timing_screen"]
         if self.config["mode"] == "validate" and any(
             abs(item["improvement"]) > 0.05
@@ -687,12 +661,9 @@ class Run:
         for name, roles in self.report["samples"].items():
             for role, rows in roles.items():
                 times = [row["wall_ms"] for row in rows]
-                if len(times) >= 9 and len(times) % 3 == 0:
-                    info = local_screening.estimate([times])
-                    screen.setdefault("estimates", {}).setdefault(name, {})[role] = info
-                    reasons = info["reasons"]
-                else:
-                    reasons = local_screening.uncertainty(times)
+                info = calibration.estimate([times])
+                screen.setdefault("estimates", {}).setdefault(name, {})[role] = info
+                reasons = info["reasons"]
                 screen["reasons"].extend(
                     f"{name}/{role}: {reason}" for reason in reasons
                 )
@@ -722,10 +693,12 @@ class Run:
             and quality_ok
             and self.report["behavior_comparison"]["passed"]
             and not resource_failure
+            and self.report["verdict"] not in ("does_not_qualify", "invalid", "validation_failed")
         ):
             self.report.update(verdict="inconclusive", reasons=list(screen["reasons"]))
         elif (
             self.config["mode"] == "compare"
+            and local_screening.enabled(self.profile)
             and not screen["reasons"]
             and quality_ok
             and self.report["behavior_comparison"]["passed"]
@@ -759,161 +732,90 @@ def calibration_scenarios(profile: dict) -> tuple[str, ...]:
     return names
 
 
+def recalculate(record: dict, baseline: dict | None = None) -> dict:
+    """Derive current results from raw samples without modifying the source report."""
+    import copy
+
+    config = record["config"]
+    profile = record["contract"]["profile"]
+    run = Run(config | {"profile": profile, "directory": config.get("directory", "."),
+                        "max_seconds": config.get("max_seconds", 0)})
+    run.report = copy.deepcopy(record)
+    run.report.update(verdict="incomplete", reasons=[], comparisons={}, resource_comparisons={},
+                      analysis_method=calibration.METHOD, analysis_harness_sha256=harness_digest(),
+                      timing_screen={"method": calibration.METHOD, "reasons": []})
+    for name, values in record.get("calibration", {}).items():
+        if len(values) != 3 * profile.get("calibration_batches", 3):
+            raise ValueError(f"incomplete calibration measurements: {name}")
+        if not values or any(not row.get("behavior", {}).get("passed", False) for row in values):
+            raise ValueError(f"missing or failed calibration behavior: {name}")
+        info = calibration.estimate([[row["wall_ms"] for row in values]])
+        run.report["timing_screen"].setdefault("calibration", {})[name] = info
+        reasons = list(info["reasons"])
+        if baseline:
+            lo, hi = baseline["calibration_bounds"][name]
+            if not lo <= info["median_ms"] <= hi:
+                reasons.append("foundation median drift outside reference 10% margin")
+        run.report["timing_screen"]["reasons"].extend(f"calibration/{name}: {reason}" for reason in reasons)
+    if config["mode"] == "compare":
+        if baseline is None:
+            run.report["timing_screen"]["reasons"].append("comparison requires a current calibrated foundation")
+        elif (baseline.get("analysis_method") != calibration.METHOD
+              or baseline.get("verdict") != "calibrated"
+              or calibration.measurement_contract(baseline["contract"]) != calibration.measurement_contract(record["contract"])):
+            raise ValueError("comparison foundation conditions differ or need reanalysis")
+        if set(record.get("calibration", {})) != set(calibration_scenarios(profile)):
+            raise ValueError("incomplete comparison calibration")
+    run.summarize()
+    return run.report
+
+
+def reanalyze(directory: Path, destination: Path, baseline: Path | None = None) -> str:
+    if destination.exists():
+        raise ValueError("analysis outputs are immutable; choose a new destination")
+    source = directory / "report.json"
+    analyzed = recalculate(read_json(source), read_json(baseline) if baseline else None)
+    analyzed["source_report"] = {"path": str(source.resolve()), "sha256": digest(source)}
+    destination.mkdir(parents=True)
+    write_json(destination / "report.json", analyzed)
+    render(destination)
+    return analyzed["verdict"]
+
+
 def foundation(reports: list[Path], destination: Path):
     if destination.exists():
         raise ValueError("foundation files are immutable; choose a new destination")
-    records = [read_json(path / "report.json") for path in reports]
-    if len(records) < 3 or len({str(path.resolve()) for path in reports}) != len(
-        records
-    ):
+    if len(reports) < 3 or len({str(path.resolve()) for path in reports}) != len(reports):
         raise ValueError("at least three distinct foundation sessions are required")
-    if any(
-        row["verdict"] not in ("foundation_recorded", "inconclusive") for row in records
-    ):
-        raise ValueError("all sessions must finish recording successfully")
-    first = records[0]["contract"]
-    local = local_screening.enabled(first["profile"])
-    if any(
-        row["verdict"] != "foundation_recorded"
-        and not (
-            local
-            and row["verdict"] == "inconclusive"
-            and row.get("config", {}).get("mode") == "record"
-        )
-        for row in records
-    ):
-        raise ValueError("all sessions must finish recording successfully")
-    if local:
-        if any(row["contract"] != first for row in records):
-            raise ValueError("foundation sessions have different contracts")
-        return local_foundation(records, reports, destination)
-    if any(
-        not calibration.compatible_harness(row["contract"].get("harness_sha256"))
-        for row in records
-    ):
-        raise ValueError("unknown measurement harness; fresh recordings required")
-    contracts = [
-        calibration.without_microcode(row["contract"])
-        | {"harness_sha256": harness_digest()}
-        for row in records
-    ]
-    if any(item != contracts[0] for item in contracts):
-        raise ValueError("foundation sessions have different contracts")
+    records = [read_json(path / "report.json") for path in reports]
     if any(row.get("config", {}).get("mode") != "record" for row in records):
         raise ValueError("foundation requires recording sessions")
-    if first["environment"]["ami"] and (
-        any(not row["environment"].get("instance_id") for row in records)
-        or len({row["environment"]["instance_id"] for row in records}) < 3
-    ):
-        raise ValueError("cloud foundation requires at least three different instances")
-    profile = first["profile"]
-    quality_count = len(read_json(BENCHMARKS / "corpora/quality-500.json")["queries"])
+    contracts = [calibration.measurement_contract(row["contract"]) for row in records]
+    if any(item != contracts[0] for item in contracts):
+        raise ValueError("foundation sessions have different contracts")
+    profile = contracts[0]["profile"]
+    if profile["cloud"] and (any(not row["environment"].get("instance_id") for row in records)
+            or len({row["environment"]["instance_id"] for row in records}) != len(records)):
+        raise ValueError("cloud foundation requires distinct instances")
+    # Recompute instead of trusting an obsolete verdict, including CV-only failures.
     for row in records:
-        quality_runs = row.get("quality", {}).get("foundation", {}).get("runs", [])
-        if profile["quality"] and len(quality_runs) != quality_count:
-            raise ValueError("incomplete foundation quality evaluation")
-        for name in profile["scenarios"]:
-            observations = row["samples"].get(name, {}).get("foundation", [])
-            if len(observations) != profile["samples"] or profile["samples"] < 3:
-                raise ValueError(f"incomplete foundation measurements for {name}")
-            if any(
-                not item.get("behavior", {}).get("passed", False)
-                for item in observations
-            ):
-                raise ValueError(f"foundation behavior failed for {name}")
-            calibration.session_summary([item["wall_ms"] for item in observations])
-    estimates = {
-        name: calibration.reference(
-            [
-                [item["wall_ms"] for item in row["samples"][name]["foundation"]]
-                for row in records
-            ]
-        )
-        for name in calibration_scenarios(profile)
-    }
-    write_json(
-        destination,
-        {
-            "schema_version": 2,
-            "verdict": "calibrated",
-            "analysis_policy": calibration.CLOUD_POLICY,
-            "contract": contracts[0],
-            "source_contracts": [row["contract"] for row in records],
-            "estimates": estimates,
-            "calibration_bounds": {
-                name: info["bounds_ms"] for name, info in estimates.items()
-            },
-            "reports": [
-                {"path": str(path), "sha256": digest(path / "report.json")}
-                for path in reports
-            ],
-        },
-    )
-    return "calibrated"
-
-
-def local_foundation(
-    records: list[dict], reports: list[Path], destination: Path
-) -> str:
-    profile = records[0]["contract"]["profile"]
-    if not local_screening.compatible_recording(records[0]["contract"]):
-        raise ValueError("local screening contract changed; fresh recordings required")
-    reasons, bounds = [], {}
-    sessions = {name: [] for name in profile["scenarios"]}
-    quality_count = len(read_json(BENCHMARKS / "corpora/quality-500.json")["queries"])
-    for row in records:
-        if row.get("config", {}).get("mode") != "record":
-            raise ValueError("local foundation requires recording sessions")
-        quality_runs = row.get("quality", {}).get("foundation", {}).get("runs", [])
-        if profile["quality"] and len(quality_runs) != quality_count:
-            raise ValueError("incomplete foundation quality evaluation")
-        for name in profile["scenarios"]:
-            observations = row["samples"].get(name, {}).get("foundation", [])
-            if len(observations) != profile["samples"]:
-                raise ValueError(f"incomplete foundation measurements for {name}")
-            if any(
-                not item.get("behavior", {}).get("passed", False)
-                for item in observations
-            ):
-                raise ValueError(f"foundation behavior failed for {name}")
-            times = [item["wall_ms"] for item in observations]
-            sessions[name].append(times)
-    estimates = {
-        name: local_screening.estimate(times) for name, times in sessions.items()
-    }
-    for name, info in estimates.items():
-        reasons.extend(f"{name}: {reason}" for reason in info["reasons"])
-    for name in calibration_scenarios(profile):
-        bounds[name] = local_screening.reference_bounds(estimates[name])
-    source_contract = records[0]["contract"]
-    analyzed_contract = source_contract | {
-        "profile": profile | {"screening_policy": local_screening.POLICY},
-        "harness_sha256": harness_digest(),
-    }
+        analyzed = recalculate(row)
+        if analyzed["verdict"] not in ("foundation_recorded", "inconclusive"):
+            raise ValueError("foundation correctness failed: " + "; ".join(analyzed["reasons"]))
+    estimates = {name: calibration.estimate([
+        [sample["wall_ms"] for sample in row["samples"][name]["foundation"]]
+        for row in records
+    ]) for name in profile["scenarios"]}
+    reasons = [f"{name}: {reason}" for name, info in estimates.items() for reason in info["reasons"]]
     result = "inconclusive" if reasons else "calibrated"
-    write_json(
-        destination,
-        {
-            "schema_version": 3,
-            "verdict": result,
-            "reasons": reasons,
-            "contract": analyzed_contract,
-            "source_contract": source_contract,
-            "analysis_policy": local_screening.POLICY,
-            "estimates": estimates,
-            "calibration_bounds": {} if reasons else bounds,
-            "calibration_batch_medians": {
-                name: [
-                    value
-                    for batch in estimates[name]["batch_medians_ms"]
-                    for value in batch
-                ]
-                for name in calibration_scenarios(profile)
-            },
-            "reports": [
-                {"path": str(path), "sha256": digest(path / "report.json")}
-                for path in reports
-            ],
+    write_json(destination, {
+        "schema_version": 4, "verdict": result, "reasons": reasons,
+        "analysis_method": calibration.METHOD, "contract": contracts[0],
+        "source_contracts": [row["contract"] for row in records],
+        "estimates": estimates,
+        "calibration_bounds": {} if reasons else {
+            name: calibration.reference_bounds(estimates[name]) for name in calibration_scenarios(profile)
         },
-    )
+        "reports": [{"path": str(path.resolve()), "sha256": digest(path / "report.json")} for path in reports],
+    })
     return result

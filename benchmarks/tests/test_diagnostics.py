@@ -45,7 +45,7 @@ class DiagnosticConfiguration(unittest.TestCase):
             runs = [root / str(i) for i in range(3)]
             for run in runs:
                 write_json(run / "report.json", {"verdict": "diagnostic_complete"})
-            with self.assertRaisesRegex(ValueError, "finish recording"):
+            with self.assertRaisesRegex(ValueError, "requires recording"):
                 foundation(runs, root / "foundation.json")
 
 

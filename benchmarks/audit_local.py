@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-from harness import local_screening
+from harness import calibration, local_screening
 from harness.statistics import summary
 from harness.storage import digest, read_json
 
@@ -55,12 +55,12 @@ def audit(root: Path) -> dict:
                     },
                     "summary": summary(times) if times else None,
                     "median_estimate": (
-                        local_screening.estimate([times])
+                        calibration.estimate([times])
                         if len(times) >= 9 and len(times) % 3 == 0
                         else None
                     ),
                     "timing_uncertainty": (
-                        local_screening.uncertainty(times) if times else ["incomplete"]
+                        calibration.estimate([times])["reasons"] if times else ["incomplete"]
                     ),
                     "behavior_passed": all(
                         row.get("behavior", {}).get("passed", False) for row in rows
@@ -78,14 +78,14 @@ def audit(root: Path) -> dict:
                 "eligibility": (
                     "eligible for explicit policy reanalysis"
                     if report.get("contract")
-                    and local_screening.compatible_recording(report["contract"])
+                    and all(len(rows) >= 9 and len(rows) % 3 == 0 for roles in report["samples"].values() for rows in roles.values())
                     else "fresh recordings required"
                 ),
                 "scenarios": scenarios,
             }
         )
     return {
-        "policy": local_screening.POLICY,
+        "analysis_method": calibration.METHOD,
         "reports": reports,
         "missing_local_reports": missing,
     }
