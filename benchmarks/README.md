@@ -11,6 +11,8 @@ working-tree changes are excluded. Model or preprocessing changes need separate 
 
 Runtime files live outside Git in `~/.cache/visiongrep-bench/`. Preparation downloads
 verified models and images. Keep the corpus checksum lock in `cache/corpora/` with recordings.
+Keep run-specific investigation notes and audit outputs in that cache as well. Only
+curated foundation summaries belong in `benchmarks/results/`.
 
 ```sh
 python3 benchmarks/bench.py prepare --corpus 500
