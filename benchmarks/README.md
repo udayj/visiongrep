@@ -206,5 +206,17 @@ python3 -m compileall -q benchmarks/harness benchmarks/bench.py
 Storage diagnostics use `--mode diagnose --profile cloud-standard --max-hours 1` with
 cloud settings. The 800-invocation protocol produces telemetry and syscall traces,
 checks behavior and omits quality inference. Diagnostic reports cannot form foundations.
+Optimized-graph diagnostics use `--mode graph-cache --profile cloud-standard --cloud
+/path/cloud.json --candidate COMMIT`. The mode is capped at one hour and a $0.30 planning
+budget. This fixed 21-pair subset compares `v0.2.0`
+source-model loading with candidate optimized-graph loading for novel text, first external
+image, persistent text, and cached text. Setup creates and verifies both candidate graphs
+before timing, keeps the reference graph-free, and records the untimed setup warmup,
+model-session phase, and artifact size separately.
+The report includes the persistent service's first response as a primary endpoint, plus
+its warm novel-query median and cached response as controls. A two-second aggregate CPU
+check after each scenario's setup requires at least 90% idle and at most 1% steal before
+the fixed samples begin. Results and pointwise 95% paired block-bootstrap intervals are
+diagnostic only and cannot cloud-qualify a candidate; no calibrated foundation is used.
 Offline tests do not replace live validation. See [historical tooling](HISTORICAL.md)
 and [model results](RESULTS.md) for archived work.
