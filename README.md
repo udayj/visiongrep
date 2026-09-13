@@ -19,6 +19,17 @@ Required model artifacts are downloaded automatically on first use. They are sto
 or empty. Once the required models are cached, searches can run offline. An image query excludes
 the query image itself from results.
 
+On first use, VisionGrep also saves an optimized ONNX graph under `models/optimized/` for each
+model it loads. Later processes reuse compatible graphs to reduce model startup work. The vision
+and text graphs are cached separately; the tokenizer is unchanged. The first use still pays the
+optimization and save cost, and optimized graphs require additional disk space. Already-running services reuse
+their loaded sessions.
+
+Optimized graphs are tied to the source model, ONNX Runtime build and local hardware configuration.
+If an optimized graph cannot be used or saved, VisionGrep falls back to the original model.
+Removing `models/optimized/` causes the graphs to be rebuilt on subsequent use.
+`--no-cache` bypasses the SQLite index, while model artifacts and optimized graphs remain cached.
+
 ## Options
 
 ```sh
