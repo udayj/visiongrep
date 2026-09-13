@@ -45,7 +45,9 @@ def parser():
             default="local-quick",
         )
         run.add_argument(
-            "--mode", choices=("compare", "validate", "record", "diagnose"), default="compare"
+            "--mode",
+            choices=("compare", "validate", "record", "diagnose", "graph-cache"),
+            default="compare",
         )
         run.add_argument(
             "--validation-samples",
@@ -106,6 +108,22 @@ def configuration(args) -> dict:
             "scenarios": ["deleted_1pct", "modified_query_image", "modified_1pct", "renamed_1pct"],
             "batches": ["untraced", "strace"],
         }
+    elif args.mode == "graph-cache":
+        if args.profile != "cloud-standard" or not args.cloud or args.baseline:
+            raise ValueError(
+                "graph-cache requires cloud-standard and --cloud, without --baseline"
+            )
+        profile = profile | {
+            "name": "graph-cache-diagnostic",
+            "samples": 21,
+            "quality": False,
+            "scenarios": [
+                "novel_text",
+                "external_image_first",
+                "persistent_text",
+                "cached_text",
+            ],
+        }
     if args.validation_samples is not None:
         if args.mode != "validate":
             raise ValueError("--validation-samples requires --mode validate")
@@ -128,13 +146,16 @@ def configuration(args) -> dict:
     if args.mode in ("record", "validate", "diagnose"):
         sha = foundation_sha
     hourly = 0.26 if args.cloud else 0
+    budget_usd = min(args.budget_usd, 0.30) if args.mode == "graph-cache" else args.budget_usd
     seconds = int(
         min(
             args.max_hours * 3600,
-            args.budget_usd / hourly * 3600 if hourly else float("inf"),
+            budget_usd / hourly * 3600 if hourly else float("inf"),
         )
     )
     if args.mode == "diagnose":
+        seconds = min(seconds, 3600)
+    elif args.mode == "graph-cache":
         seconds = min(seconds, 3600)
     return {
         "cloud_slot": args.cloud_slot,
@@ -153,7 +174,7 @@ def configuration(args) -> dict:
         "max_seconds": seconds,
         "command_timeout_seconds": seconds,
         "hourly_budget_usd": hourly,
-        "budget_usd": args.budget_usd,
+        "budget_usd": budget_usd,
     }
 
 
