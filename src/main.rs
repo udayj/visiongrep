@@ -13,7 +13,7 @@ mod timing;
 use clap::Parser;
 
 use crate::application::search;
-use crate::cli::{Cli, Subcommands, Terminal};
+use crate::cli::{Cli, ServeMode, Subcommands, Terminal};
 use crate::error::VisionGrepError;
 use crate::timing::{Phase, TimingRecorder};
 
@@ -32,25 +32,42 @@ fn main() {
 fn run() -> Result<ExitStatus, VisionGrepError> {
     let mut cli = Cli::parse();
     if let Some(Subcommands::Serve {
-        path, index_path, ..
+        path,
+        index_path,
+        mode,
     }) = cli.subcommand.take()
     {
         return preserve_status_on_broken_pipe(
             ExitStatus::Found,
-            crate::cli::serve(&path, index_path.as_deref()),
+            match mode.mode() {
+                ServeMode::Stdio => crate::cli::serve(&path, index_path.as_deref()),
+                ServeMode::Socket => crate::cli::serve_socket(&path, index_path.as_deref()),
+            },
         );
     }
     let command = cli.into_command().unwrap_or_else(|error| error.exit());
+    if command.request.is_reindex() && crate::cli::socket_server_running(&command.request) {
+        return Err(VisionGrepError::ReindexWhileSocketServerRunning);
+    }
     let mut timing = TimingRecorder::new(
         command.timing_destination.is_some(),
         crate::model::timing_metadata(),
     );
     let mut terminal = Terminal::new(command.output_format, command.quiet);
-    let results = search(
-        &command.request,
-        &mut |event| terminal.handle_event(event),
-        &mut timing,
-    )?;
+    let use_socket = command.request.can_use_server() && command.timing_destination.is_none();
+    let socket_results = if use_socket {
+        crate::cli::try_socket_search(&command.request, &mut terminal)?
+    } else {
+        None
+    };
+    let results = match socket_results {
+        Some(results) => results,
+        None => search(
+            &command.request,
+            &mut |event| terminal.handle_event(event),
+            &mut timing,
+        )?,
+    };
     let status = ExitStatus::from_has_matches(!results.is_empty());
 
     let output_started = timing.start();

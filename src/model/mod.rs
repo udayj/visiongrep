@@ -3,7 +3,8 @@ mod graph_cache;
 mod runtime;
 
 pub(crate) use artifacts::{
-    ArtifactEvent, ArtifactVerification, embedding_contract, model_paths, timing_metadata,
+    ArtifactEvent, ArtifactVerification, cache_dir, embedding_contract, model_paths,
+    timing_metadata,
 };
 pub(crate) use runtime::{TextSession, VisionSession};
 

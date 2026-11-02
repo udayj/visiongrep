@@ -53,11 +53,46 @@ impl SearchRequest {
             artifact_verification,
         }
     }
+
+    pub(crate) fn can_use_server(&self) -> bool {
+        self.cache_mode == CacheMode::Use
+            && self.artifact_verification == ArtifactVerification::Fast
+    }
+
+    pub(crate) fn is_reindex(&self) -> bool {
+        self.cache_mode == CacheMode::Reindex
+    }
+
+    pub(crate) fn query(&self) -> &Query {
+        &self.query
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn index_path(&self) -> Option<&Path> {
+        self.index_path.as_deref()
+    }
+
+    pub(crate) fn top(&self) -> usize {
+        self.top
+    }
+
+    pub(crate) fn threshold(&self) -> f32 {
+        self.threshold
+    }
 }
 
 pub(crate) enum SearchEvent {
     Index(IngestEvent),
     Artifact(ArtifactEvent),
+}
+
+#[derive(Clone, Copy)]
+struct RankingOptions {
+    top: usize,
+    threshold: f32,
 }
 
 /// Coordinates one search and reports progress without depending on terminal presentation.
@@ -94,7 +129,21 @@ pub(crate) fn search(
             let index_started = timing.start();
             let index = ImageIndex::open(&location, root.filesystem_path(), embedding_contract())?;
             timing.record(Phase::IndexOpenSchemaInitialization, index_started);
-            search_with_cache(&root, &files, request, query, index, on_event, timing)
+            let mut service = SearchService {
+                root,
+                index,
+                models: Models::new(request.artifact_verification),
+            };
+            service.search_discovered(
+                &files,
+                query,
+                RankingOptions {
+                    top: request.top,
+                    threshold: request.threshold,
+                },
+                on_event,
+                timing,
+            )
         }
         CacheMode::Reindex => {
             timing.set_index_cache_state(CacheState::Reindexed);
@@ -140,32 +189,6 @@ fn search_without_cache(
         timing,
     )?;
     Ok(rank_query(prepared, request.top, request.threshold, timing))
-}
-
-/// Reconciles the on-disk index and loads only the model sessions required by the current state.
-///
-/// An unchanged directory plus cached text or an indexed query image needs no ONNX session.
-/// Changed images and external image queries share a vision session; novel text uses a text session.
-fn search_with_cache(
-    root: &SearchRoot,
-    files: &[ImageFile],
-    request: &SearchRequest,
-    query: ResolvedQuery<'_>,
-    mut index: ImageIndex,
-    on_event: &mut impl FnMut(SearchEvent),
-    timing: &mut TimingRecorder,
-) -> Result<Vec<SearchResult>, VisionGrepError> {
-    let mut models = Models::new(request.artifact_verification);
-    refresh_index(root, files, &mut index, &mut models, on_event, timing)?;
-    search_index(
-        root,
-        request,
-        query,
-        &mut index,
-        &mut models,
-        on_event,
-        timing,
-    )
 }
 
 fn refresh_index(
@@ -235,26 +258,40 @@ impl SearchService {
         let files = discover_images(&self.root)?;
         timing.record(Phase::RecursiveDiscoveryMetadata, started);
         timing.set_corpus_size(files.len());
+        self.search_discovered(
+            &files,
+            query,
+            RankingOptions { top, threshold },
+            on_event,
+            timing,
+        )
+    }
+
+    fn search_discovered(
+        &mut self,
+        files: &[ImageFile],
+        query: ResolvedQuery<'_>,
+        ranking: RankingOptions,
+        on_event: &mut impl FnMut(SearchEvent),
+        timing: &mut TimingRecorder,
+    ) -> Result<Vec<SearchResult>, VisionGrepError> {
         refresh_index(
             &self.root,
-            &files,
+            files,
             &mut self.index,
             &mut self.models,
             on_event,
             timing,
         )?;
-        let started = timing.start();
-        let images = self.index.all_embeddings(self.root.display_path())?;
-        timing.record(Phase::CachedVectorLoadingDeserialization, started);
-        let prepared = query.prepare(
+        search_index(
             &self.root,
-            images,
-            Some(&mut self.index),
+            query,
+            ranking,
+            &mut self.index,
             &mut self.models,
-            &mut |event| on_event(SearchEvent::Artifact(event)),
+            on_event,
             timing,
-        )?;
-        Ok(rank_query(prepared, top, threshold, timing))
+        )
     }
 }
 
@@ -297,8 +334,11 @@ fn reindex_and_search(
     // rebuild is complete and this invocation no longer needs to reopen the replacement.
     let results = search_index(
         root,
-        request,
         query,
+        RankingOptions {
+            top: request.top,
+            threshold: request.threshold,
+        },
         staged.index_mut(),
         &mut models,
         on_event,
@@ -311,8 +351,8 @@ fn reindex_and_search(
 
 fn search_index(
     root: &SearchRoot,
-    request: &SearchRequest,
     query: ResolvedQuery<'_>,
+    ranking: RankingOptions,
     index: &mut ImageIndex,
     models: &mut Models,
     on_event: &mut impl FnMut(SearchEvent),
@@ -329,7 +369,7 @@ fn search_index(
         &mut |event| on_event(SearchEvent::Artifact(event)),
         timing,
     )?;
-    Ok(rank_query(prepared, request.top, request.threshold, timing))
+    Ok(rank_query(prepared, ranking.top, ranking.threshold, timing))
 }
 
 fn rank_query(

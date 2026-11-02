@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 
 use super::terminal::OutputFormat;
 use crate::application::{CacheMode, Query, SearchRequest};
@@ -103,17 +103,37 @@ pub(crate) struct Cli {
 pub(crate) enum Subcommands {
     /// Serve sequential JSONL search requests, refreshing the index before each search
     Serve {
-        #[arg(
-            long,
-            required = true,
-            help = "Read JSONL from stdin and write JSONL to stdout"
-        )]
-        stdio: bool,
+        #[command(flatten)]
+        mode: ServeModeArgs,
         #[arg(long, value_name = "PATH", help = "Store the index at PATH")]
         index_path: Option<PathBuf>,
         /// Directory to search recursively
         path: PathBuf,
     },
+}
+
+#[derive(Debug, Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct ServeModeArgs {
+    #[arg(long, help = "Read JSONL from stdin and write JSONL to stdout")]
+    stdio: bool,
+    #[arg(long, help = "Listen for local CLI searches on a Unix socket")]
+    socket: bool,
+}
+
+pub(crate) enum ServeMode {
+    Stdio,
+    Socket,
+}
+
+impl ServeModeArgs {
+    pub(crate) fn mode(&self) -> ServeMode {
+        if self.stdio {
+            ServeMode::Stdio
+        } else {
+            ServeMode::Socket
+        }
+    }
 }
 
 pub(crate) struct Command {
@@ -234,12 +254,16 @@ mod tests {
         .unwrap();
         assert!(matches!(
             cli.subcommand,
-            Some(Subcommands::Serve { stdio: true, .. })
+            Some(Subcommands::Serve {
+                mode: ServeModeArgs { stdio: true, .. },
+                ..
+            })
         ));
         for args in [
             vec!["visiongrep", "serve", "photos"],
             vec!["visiongrep", "serve", "--stdio"],
             vec!["visiongrep", "serve", "--stdio", "photos", "--no-cache"],
+            vec!["visiongrep", "serve", "--stdio", "--socket", "photos"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
