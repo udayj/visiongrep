@@ -47,6 +47,15 @@ pub(crate) enum EmbeddingError {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VisionGrepError {
+    #[error("a server is already running for {path}")]
+    SocketServerRunning { path: PathBuf },
+
+    #[error("stop the socket server before --reindex")]
+    ReindexWhileSocketServerRunning,
+
+    #[error("{message}")]
+    SocketRemote { message: String },
+
     #[error("stdio request exceeds {limit} bytes")]
     StdioRequestTooLarge { limit: u64 },
 

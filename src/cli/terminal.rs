@@ -40,6 +40,35 @@ impl Terminal {
         }
     }
 
+    pub(super) fn handle_socket_event(&mut self, event: super::socket::Event) {
+        use super::socket::Event;
+
+        match event {
+            Event::IndexStarted { total } => {
+                self.handle_ingest_event(IngestEvent::Started { total })
+            }
+            Event::ImageProcessed => self.handle_ingest_event(IngestEvent::ImageProcessed),
+            Event::ImageSkipped(message) => {
+                if !self.quiet {
+                    eprintln!("warning: {message}");
+                }
+            }
+            Event::IndexFinished => self.handle_ingest_event(IngestEvent::Finished),
+            Event::DownloadStarted { artifact } => {
+                if !self.quiet {
+                    eprintln!("Downloading {artifact}...");
+                }
+            }
+            Event::ContentLength { bytes } => {
+                self.handle_artifact_event(ArtifactEvent::ContentLength { bytes })
+            }
+            Event::BytesRead { bytes } => {
+                self.handle_artifact_event(ArtifactEvent::BytesRead { bytes })
+            }
+            Event::DownloadFinished => self.handle_artifact_event(ArtifactEvent::DownloadFinished),
+        }
+    }
+
     /// Serializes results to stdout without lossy path conversion.
     ///
     /// Text and paths-only formats write native Unix path bytes. JSON remains fallible because JSON

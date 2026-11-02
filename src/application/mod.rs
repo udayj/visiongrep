@@ -53,6 +53,35 @@ impl SearchRequest {
             artifact_verification,
         }
     }
+
+    pub(crate) fn can_use_server(&self) -> bool {
+        self.cache_mode == CacheMode::Use
+            && self.artifact_verification == ArtifactVerification::Fast
+    }
+
+    pub(crate) fn is_reindex(&self) -> bool {
+        self.cache_mode == CacheMode::Reindex
+    }
+
+    pub(crate) fn query(&self) -> &Query {
+        &self.query
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn index_path(&self) -> Option<&Path> {
+        self.index_path.as_deref()
+    }
+
+    pub(crate) fn top(&self) -> usize {
+        self.top
+    }
+
+    pub(crate) fn threshold(&self) -> f32 {
+        self.threshold
+    }
 }
 
 pub(crate) enum SearchEvent {

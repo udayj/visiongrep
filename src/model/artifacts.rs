@@ -168,7 +168,7 @@ pub(crate) fn ensure_text_artifacts(
     Ok(())
 }
 
-fn cache_dir() -> Result<PathBuf, VisionGrepError> {
+pub(crate) fn cache_dir() -> Result<PathBuf, VisionGrepError> {
     if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME").filter(|path| !path.is_empty()) {
         return Ok(PathBuf::from(cache_home).join("visiongrep"));
     }

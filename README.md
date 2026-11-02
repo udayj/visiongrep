@@ -47,6 +47,23 @@ Use `--null` for exact paths separated by NUL bytes, or `--quiet` to suppress pr
 
 Exit codes are `0` for matches, `1` for no matches, and `2` for an operational or argument error.
 
+## Persistent socket server
+
+Start an opt-in server for a search directory to reuse its loaded models across ordinary CLI
+searches:
+
+```sh
+./target/release/visiongrep serve --socket ./photos &
+./target/release/visiongrep "a dog on a beach" ./photos
+```
+
+The server runs in the foreground until stopped. Searches use it automatically when the search
+directory and resolved index path match; otherwise they run as normal one-shot searches. Pass the
+same `--index-path` to the server and searches when using a custom index. The server loads models
+as needed and keeps them in memory (about 400–600 MiB with both models loaded). `--no-cache`,
+`--reindex`, `--verify-models`, and `--timing` always run one-shot searches. `--reindex` refuses to
+run while a socket server is listening for the same root and index; stop the server first.
+
 ## Persistent stdio searches
 
 ```sh
