@@ -16,5 +16,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m unittest discover -s benchmarks/tests -v
-      - run: python -m compileall -q benchmarks/harness benchmarks/bench.py
+      - run: python -m unittest benchmarks/test_bench.py
+      - run: python -m py_compile benchmarks/bench.py benchmarks/quality.py benchmarks/aws.py
