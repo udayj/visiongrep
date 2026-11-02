@@ -303,6 +303,11 @@ class Run:
 
             measure(self, binaries["foundation"], cache, corpus)
             return
+        if config["mode"] == "graph-cache":
+            from .graph_cache import measure
+
+            measure(self, binaries, identities, cache, corpus)
+            return
         if config["mode"] == "validate" and identities["candidate"] != config["foundation_sha"]:
             raise ValueError("validation must compare foundation against itself")
         if config["mode"] != "record":
@@ -438,6 +443,11 @@ class Run:
         scenario.external.unlink(missing_ok=True)
 
     def summarize(self):
+        if self.config["mode"] == "graph-cache":
+            from .graph_cache import summarize
+
+            summarize(self)
+            return
         config = self.config
         roles = (
             {"foundation"}

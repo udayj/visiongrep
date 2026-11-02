@@ -10,9 +10,9 @@ working-tree changes are excluded. Model or preprocessing changes need separate 
 ## Prepare and validate
 
 Runtime files live outside Git in `~/.cache/visiongrep-bench/`. Preparation downloads
-verified models and images. Keep the corpus checksum lock in `cache/corpora/` with recordings.
-Keep run-specific investigation notes and audit outputs in that cache as well. Only
-curated foundation summaries belong in `benchmarks/results/`.
+verified models and images. The corpus checksum lock lives in `cache/corpora/` alongside
+recordings. Curated benchmark results live in `benchmarks/results/`; raw run artifacts
+remain in the external cache.
 
 ```sh
 python3 benchmarks/bench.py prepare --corpus 500
@@ -62,8 +62,7 @@ models, quality judgments, machine, and build settings. Original harness hashes 
 provenance; analysis labels and full-harness hashes are not experimental conditions.
 Reanalysis is an explicit operation on raw evidence, not proof that arbitrary versions
 of measurement code are equivalent. Audit the source measurement protocol before combining
-recordings; actual measurement changes require fresh evidence. This change preserves
-the one-shot invocations and persistent sequence definitions. Microcode remains diagnostic.
+recordings; actual measurement changes require fresh evidence. Microcode remains diagnostic.
 
 ## Profiles and acceptance
 
@@ -95,7 +94,7 @@ available for serve; compiled binary provenance comes from the untimed seed warm
 The independent statistical sample is a process sequence, not an
 individual request. First-use and control timings are descriptive; the primary latency
 gate uses the warm median. One-shot and persistent scenarios share one foundation per
-profile; the new measurement contract requires fresh recordings.
+profile; recordings must use the same measurement contract.
 
 Comparisons precheck novel and cached text with nine samples each, plus no-cache
 embedding on cloud-standard, using the full corpus. Recording has no separate precheck.
@@ -206,5 +205,25 @@ python3 -m compileall -q benchmarks/harness benchmarks/bench.py
 Storage diagnostics use `--mode diagnose --profile cloud-standard --max-hours 1` with
 cloud settings. The 800-invocation protocol produces telemetry and syscall traces,
 checks behavior and omits quality inference. Diagnostic reports cannot form foundations.
+
+Optimized-graph diagnostics use:
+
+```sh
+python3 benchmarks/bench.py run --mode graph-cache --profile cloud-standard --cloud /path/cloud.json --candidate COMMIT
+```
+
+The mode is capped at one hour and a $0.30 planning budget. This fixed 21-pair subset compares `v0.2.0`
+source-model loading with candidate optimized-graph loading for novel text, first external
+image, persistent text, and cached text. Setup creates and verifies both candidate graphs
+before timing, keeps the reference graph-free, and records the untimed setup warmup,
+model-session phase, and artifact size separately.
+The report includes the persistent service's first response as a primary endpoint, plus
+its warm novel-query median and cached response as controls. A two-second aggregate CPU
+check after each scenario's setup requires at least 90% idle and at most 1% steal before
+the fixed samples begin. Results and pointwise 95% paired block-bootstrap intervals are
+diagnostic only and cannot cloud-qualify a candidate; no calibrated foundation is used.
+The [2026-09-13 Linux results](results/onnx-graph-cache-2026-09-13.md) record the measured
+startup gains, preparation cost, and scope of correctness checks.
+
 Offline tests do not replace live validation. See [historical tooling](HISTORICAL.md)
 and [model results](RESULTS.md) for archived work.

@@ -1,11 +1,12 @@
 use std::path::Path;
 
 use ndarray::{Array2, Array4};
-use ort::session::{Session, builder::GraphOptimizationLevel};
+use ort::session::Session;
 use ort::value::TensorRef;
 use tokenizers::{PaddingParams, PaddingStrategy, TruncationParams};
 
-use super::artifacts::ModelPaths;
+use super::artifacts::{ModelPaths, TEXT_MODEL_SHA256, VISION_MODEL_SHA256};
+use super::graph_cache;
 use crate::embedding::EMBEDDING_DIM;
 use crate::error::VisionGrepError;
 use crate::timing::{Phase, TimingRecorder};
@@ -26,7 +27,7 @@ pub(crate) struct TextSession {
 impl VisionSession {
     pub(crate) fn load(paths: &ModelPaths) -> Result<Self, VisionGrepError> {
         Ok(Self {
-            session: load_session(&paths.vision_model)?,
+            session: load_session(&paths.vision_model, VISION_MODEL_SHA256)?,
         })
     }
 
@@ -58,7 +59,7 @@ impl TextSession {
         require_file(&paths.text_model)?;
         require_file(&paths.tokenizer)?;
 
-        let session = load_session(&paths.text_model)?;
+        let session = load_session(&paths.text_model, TEXT_MODEL_SHA256)?;
         let tokenizer = tokenizers::Tokenizer::from_file(&paths.tokenizer).map_err(|source| {
             VisionGrepError::TokenizerLoad {
                 path: paths.tokenizer.clone(),
@@ -160,15 +161,9 @@ fn extract_embeddings(
 ///
 /// Session ownership stays with the typed vision or text wrapper so runtime resources are released
 /// through ordinary RAII and are never hidden in global state.
-fn load_session(path: &Path) -> Result<Session, VisionGrepError> {
+fn load_session(path: &Path, model_sha256: &str) -> Result<Session, VisionGrepError> {
     require_file(path)?;
-    Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|source| VisionGrepError::SessionBuilder {
-            source: Box::new(source),
-        })?
-        .commit_from_file(path)
-        .map_err(VisionGrepError::Inference)
+    graph_cache::load_session(path, model_sha256)
 }
 
 fn require_file(path: &Path) -> Result<(), VisionGrepError> {

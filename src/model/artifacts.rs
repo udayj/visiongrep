@@ -26,9 +26,10 @@ const VISION_MODEL_URL: &str = "https://huggingface.co/yurijmikhalevich/rclip-mo
 const TEXT_MODEL_URL: &str = "https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/textual.onnx";
 const TOKENIZER_URL: &str = "https://huggingface.co/laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K/resolve/4afec35ffe57a943d569ff7ee888061830164da8/tokenizer.json";
 
-const VISION_MODEL_SHA256: &str =
+pub(super) const VISION_MODEL_SHA256: &str =
     "3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c";
-const TEXT_MODEL_SHA256: &str = "ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc";
+pub(super) const TEXT_MODEL_SHA256: &str =
+    "ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc";
 const TOKENIZER_SHA256: &str = "72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85";
 const VISION_MODEL_SIZE: u64 = 351_826_068;
 const TEXT_MODEL_SIZE: u64 = 254_344_274;

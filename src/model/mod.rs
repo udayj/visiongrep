@@ -1,4 +1,5 @@
 mod artifacts;
+mod graph_cache;
 mod runtime;
 
 pub(crate) use artifacts::{
