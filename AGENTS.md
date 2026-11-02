@@ -36,9 +36,34 @@ When principles conflict, prefer:
 2. simplicity and local reasoning,
 3. type safety and API ergonomics,
 4. maintainability,
-5. compatibility,
-6. measured performance,
-7. terseness.
+5. measured performance,
+6. terseness.
+
+---
+
+# 0. No backwards compatibility
+
+VisionGrep has no external users yet. Release tags such as `v0.2.0` exist for benchmarking and
+history, not because anyone depends on them. No installed binaries or persisted indexes
+elsewhere need to keep working.
+
+Do not write code for compatibility with earlier versions of VisionGrep:
+
+- no migrations of older index schemas — when the stored schema version is not the current
+  one, rebuild the index,
+- no protocol versions, handshakes, or negotiation between VisionGrep processes,
+- no deprecated aliases, compatibility shims, or fallbacks for older builds or older on-disk
+  state,
+- no tests whose only purpose is to keep an older format or behavior working.
+
+When the simplest correct design changes a CLI flag, output format, exit behavior, index
+schema, or internal API, change it and update the tests and documentation in the same change.
+
+This does not relax correctness checks that are not about version history, such as rejecting
+an index that belongs to a different search root, invalidating cached embeddings when the
+model changes, or verifying downloaded model artifacts.
+
+Remove or narrow this section once VisionGrep has external users.
 
 ---
 
@@ -1390,8 +1415,7 @@ Test meaningful:
 - boundaries,
 - empty inputs,
 - malformed inputs,
-- persistence behavior,
-- compatibility behavior.
+- persistence behavior.
 
 Do not over-mock.
 
@@ -1450,8 +1474,6 @@ If the workspace declares a compatibility floor, preserve it unless the task exp
 
 # 26. Serialization and persistence
 
-Treat serialized and persisted formats as compatibility boundaries.
-
 Use explicit types rather than ad-hoc maps when the schema is known.
 
 Do not change:
@@ -1460,11 +1482,11 @@ Do not change:
 - enum representations,
 - defaults,
 - database semantics,
-- compatibility behavior,
 
 incidentally.
 
-If a persisted/external format changes, make the migration and compatibility story explicit.
+Persisted formats may change whenever the task calls for it. Per section 0, bump the stored
+schema version and rebuild older indexes instead of migrating them.
 
 Do not expose internal implementation structures as external schemas merely because serialization is
 easy.
@@ -1778,6 +1800,7 @@ Before finishing any Rust change, verify:
 - Are stdout and stderr used according to the CLI contract?
 - Are exit codes preserved?
 - Are persistent/external formats changed only intentionally?
+- Did I avoid compatibility code for older VisionGrep versions (section 0)?
 - Are relevant error and boundary cases tested?
 - Is the diff focused?
 - Does directly touched code meet this file even if old surrounding code does not?
