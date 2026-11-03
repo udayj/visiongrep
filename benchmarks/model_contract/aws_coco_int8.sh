@@ -24,7 +24,7 @@ curl --fail --location --silent --show-error \
 unzip -q "$work_dir/val2017.zip" -d "$work_dir/coco"
 unzip -q "$work_dir/annotations_trainval2017.zip" 'annotations/captions_val2017.json' -d "$work_dir/coco"
 
-vision_int8_sha256=efbb607e7b726b8eafc5de1fb07b17a655679fb7e83a91fb4dd1c4a4ce42970c
+vision_int8_sha256=f6ae78a288ea20d48c0c6190200aa62dff66f5ccc4c7c2bb7f2d7999b4236ffe
 vision_int8="$work_dir/visual-int8.onnx"
 aws s3 cp "s3://$BUCKET/artifacts/$vision_int8_sha256.onnx" "$vision_int8" --only-show-errors
 printf '%s  %s\n' "$vision_int8_sha256" "$vision_int8" | sha256sum --check
