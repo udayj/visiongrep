@@ -407,6 +407,13 @@ def main():
     p.add_argument('--instance-type', default='c7a.xlarge')
     p.add_argument('--max-minutes', type=int, default=60)
     p.add_argument('--dry-run', action='store_true')
+    p = sub.add_parser('aws-script')
+    p.add_argument('ref')
+    p.add_argument('script')
+    p.add_argument('--settings', type=Path, required=True)
+    p.add_argument('--instance-type', default='c7a.xlarge')
+    p.add_argument('--max-minutes', type=int, default=60)
+    p.add_argument('--dry-run', action='store_true')
     p = sub.add_parser('aws-fetch')
     p.add_argument('run_id')
     p.add_argument('--settings', type=Path, required=True)
@@ -420,7 +427,7 @@ def main():
             compare(args)
         elif args.action == 'quality':
             quality_command(args)
-        elif args.action == 'aws-run':
+        elif args.action in ('aws-run', 'aws-script'):
             aws.run(args)
         elif args.action == 'aws-fetch':
             aws.fetch(args, print_report)
