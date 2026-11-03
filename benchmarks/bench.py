@@ -1,306 +1,436 @@
 #!/usr/bin/env python3
-"""VisionGrep benchmark commands. Run `python3 benchmarks/bench.py --help`."""
-
-from __future__ import annotations
-
+"""Fresh, paired comparisons of two VisionGrep commits."""
 import argparse
+import datetime
+import hashlib
 import json
+import math
+import os
+import platform
+import random
+import shutil
+import socket
+import sqlite3
+import statistics
 import subprocess
 import sys
+import tempfile
 import time
-import uuid
+import urllib.request
 from pathlib import Path
 
-from harness import assets, cloud, report, runner
-from harness.storage import (
-    BENCHMARKS,
-    FOUNDATION,
-    ROOT,
-    command,
-    digest,
-    outside_repository,
-    read_json,
-    write_json,
-)
+if __package__:
+    from . import aws, quality
+else:
+    import aws
+    import quality
 
-DEFAULT_HOME = Path.home() / ".cache/visiongrep-bench"
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+CACHE = Path.home() / '.cache/visiongrep-bench'
+SCENARIOS = ('index', 'novel_text', 'cached_text', 'external_image', 'changed_1pct', 'server_novel_text')
+TEXT = 'a bicycle near water'
 
 
-def parser():
-    root = argparse.ArgumentParser(description=__doc__)
-    sub = root.add_subparsers(dest="action", required=True)
-    prepare = sub.add_parser(
-        "prepare", help="download/verify reusable artifacts; no inference"
+def read(path):
+    return json.loads(path.read_text())
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def inputs():
+    images = read(HERE / 'corpora/coco-500.json')['images']
+    checksums = read(HERE / 'corpora/image-checksums.json')
+    return [row | checksums[row['file_name']] for row in images]
+
+
+def fetch(url, path, checksum):
+    if path.is_file() and digest(path) == checksum:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as tmp:
+        temp = Path(tmp.name)
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                shutil.copyfileobj(response, tmp)
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
+    try:
+        if digest(temp) != checksum:
+            raise ValueError(f'checksum mismatch: {url}')
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def prepare():
+    for row in read(HERE / 'artifacts.json') + inputs():
+        fetch(row['url'], CACHE / 'objects' / row['sha256'], row['sha256'])
+
+
+def verify(rows):
+    for row in read(HERE / 'artifacts.json') + rows:
+        path = CACHE / 'objects' / row['sha256']
+        if not path.is_file() or digest(path) != row['sha256']:
+            raise ValueError(f'missing or corrupt {path}; run prepare first')
+
+
+def resolve(ref):
+    return subprocess.check_output(['git', 'rev-parse', '--verify', f'{ref}^{{commit}}'], cwd=ROOT, text=True).strip()
+
+
+def build(sha):
+    binary = CACHE / 'binaries' / sha / 'visiongrep'
+    if binary.is_file():
+        return binary
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='visiongrep-build-') as tmp:
+        tree = Path(tmp) / 'source'
+        subprocess.run(['git', 'worktree', 'add', '--detach', str(tree), sha], cwd=ROOT, check=True)
+        try:
+            subprocess.run(['cargo', 'build', '--release', '--locked'], cwd=tree, check=True)
+            with tempfile.NamedTemporaryFile(dir=binary.parent, delete=False) as output:
+                temporary = Path(output.name)
+            try:
+                shutil.copy2(tree / 'target/release/visiongrep', temporary)
+                temporary.replace(binary)
+            finally:
+                temporary.unlink(missing_ok=True)
+        finally:
+            subprocess.run(['git', 'worktree', 'remove', '--force', str(tree)], cwd=ROOT, check=True)
+    return binary
+
+
+def change_interval(reference, candidate):
+    def change(a, b):
+        return 1 - statistics.median(b) / statistics.median(a)
+    rng = random.Random(91017)
+    draws = []
+    for _ in range(2000):
+        indices = rng.choices(range(len(reference)), k=len(reference))
+        draws.append(change([reference[i] for i in indices], [candidate[i] for i in indices]))
+    draws.sort()
+    return change(reference, candidate), draws[49], draws[1949]
+
+
+def output_difference(left, right):
+    if len(left) != len(right):
+        return f'result count differs: {len(left)} vs {len(right)}'
+    for i, (a, b) in enumerate(zip(left, right)):
+        if (a['path'] != b['path'] or not math.isfinite(a['score'])
+                or not math.isfinite(b['score']) or abs(a['score'] - b['score']) > 1e-4):
+            return f'result {i + 1} differs: {a} vs {b}'
+    return None
+
+
+def sample_order(index):
+    return (0, 1) if index % 2 == 0 else (1, 0)
+
+
+def rss_bytes(value, platform_name):
+    return value if platform_name.lower() == 'darwin' else value * 1024
+
+
+def measured(command, env):
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        start = time.perf_counter()
+        child = subprocess.Popen(command, stdout=out, stderr=err, env=env)
+        _, status, usage = os.wait4(child.pid, 0)
+        elapsed = time.perf_counter() - start
+        child.returncode = os.waitstatus_to_exitcode(status)
+        out.seek(0)
+        err.seek(0)
+        if child.returncode not in (0, 1):
+            raise RuntimeError(f'command failed: {command}\n{err.read().decode(errors="replace")[-3000:]}')
+        return {'seconds': elapsed, 'rss_bytes': rss_bytes(usage.ru_maxrss, sys.platform), 'results': json.load(out)}
+
+
+def stage(root, binary, rows):
+    images = root / 'images'
+    images.mkdir(parents=True)
+    for row in rows:
+        shutil.copyfile(CACHE / 'objects' / row['sha256'], images / row['file_name'])
+    models = root / 'cache/visiongrep/models'
+    models.mkdir(parents=True)
+    for row in read(HERE / 'artifacts.json'):
+        (models / row['name']).symlink_to(CACHE / 'objects' / row['sha256'])
+    external = root / 'external.jpg'
+    shutil.copyfile(images / rows[0]['file_name'], external)
+    env = os.environ.copy()
+    env['XDG_CACHE_HOME'] = str(root / 'cache')
+    return {'root': root, 'images': images, 'index': root / 'index.db', 'external': external, 'env': env, 'binary': binary, 'rows': rows}
+
+
+def command(state, query=TEXT, image=None, top=10):
+    query_args = ['--image', str(image)] if image else [query]
+    return [str(state['binary']), *query_args, str(state['images']),
+            '--top', str(top), '--threshold', '-1', '--json', '--quiet',
+            '--index-path', str(state['index'])]
+
+
+def run(state, query=TEXT, image=None, top=10):
+    result = measured(command(state, query, image, top), state['env'])
+    for item in result['results']:
+        item['path'] = str(Path(item['path']).relative_to(state['images']))
+    return result
+
+
+def checkpoint(state):
+    with sqlite3.connect(state['index']) as db:
+        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+
+
+def reset(state, scenario):
+    for suffix in ('', '-wal', '-shm', '-journal'):
+        Path(str(state['index']) + suffix).unlink(missing_ok=True)
+    if scenario != 'index':
+        shutil.copyfile(state['root'] / 'seed.db', state['index'])
+    if scenario == 'changed_1pct':
+        for row in state['rows'][:max(1, math.ceil(len(state['rows']) * .01))]:
+            path = state['images'] / row['file_name']
+            shutil.copyfile(CACHE / 'objects' / state['rows'][-1]['sha256'], path)
+            stamp = state['stamps'][row['file_name']] + 1_000_000_000
+            os.utime(path, ns=(stamp, stamp))
+
+
+def restore_images(state):
+    for row in state['rows'][:max(1, math.ceil(len(state['rows']) * .01))]:
+        path = state['images'] / row['file_name']
+        shutil.copyfile(CACHE / 'objects' / row['sha256'], path)
+        stamp = state['stamps'][row['file_name']]
+        os.utime(path, ns=(stamp, stamp))
+
+
+def start_server(state):
+    cmd = [str(state['binary']), 'serve', '--socket', '--index-path', str(state['index']), str(state['images'])]
+    log = (state['root'] / 'server.log').open('wb')
+    child = subprocess.Popen(cmd, env=state['env'], stdout=log, stderr=log)
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            log.close()
+            raise RuntimeError(f'server exited: {(state["root"] / "server.log").read_text()[-3000:]}')
+        for path in (state['root'] / 'cache/visiongrep/run').glob('*.sock'):
+            try:
+                with socket.socket(socket.AF_UNIX) as s:
+                    s.connect(str(path))
+                return child, log
+            except OSError:
+                pass
+        time.sleep(.1)
+    child.kill()
+    child.wait()
+    log.close()
+    raise RuntimeError('server did not become ready')
+
+
+def ram_bytes():
+    if sys.platform == 'darwin':
+        return int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True))
+    for line in Path('/proc/meminfo').read_text().splitlines():
+        if line.startswith('MemTotal:'):
+            return int(line.split()[1]) * 1024
+    raise ValueError('cannot determine total RAM')
+
+
+def print_report(report):
+    print(
+        f'{"scenario":20} {"ref ms":>10} {"cand ms":>10} '
+        f'{"change (95% interval)":>28} {"ref MiB":>9} {"cand MiB":>9}'
     )
-    prepare.add_argument("--cache", type=Path, default=DEFAULT_HOME / "cache")
-    prepare.add_argument("--corpus", choices=("500", "10000"), default="500")
-    prepare.add_argument("--import-models", type=Path)
-    for action in ("plan", "run"):
-        run = sub.add_parser(
-            action, help="estimate only" if action == "plan" else "start a benchmark"
+    for name, samples in report['scenarios'].items():
+        a, b = samples['reference'], samples['candidate']
+        change, low, high = change_interval(
+            [x['seconds'] for x in a], [x['seconds'] for x in b]
         )
-        run.add_argument(
-            "--profile",
-            choices=("local-quick", "cloud-standard", "cloud-scale"),
-            default="local-quick",
+        ref_ms = statistics.median(x['seconds'] for x in a) * 1000
+        cand_ms = statistics.median(x['seconds'] for x in b) * 1000
+        ref_mib = statistics.median(x['rss_bytes'] for x in a) / 1048576
+        cand_mib = statistics.median(x['rss_bytes'] for x in b) / 1048576
+        print(
+            f'{name:20} {ref_ms:10.1f} {cand_ms:10.1f} '
+            f'{change*100:7.1f}% [{low*100:6.1f}%, {high*100:6.1f}%] '
+            f'{ref_mib:9.1f} {cand_mib:9.1f}'
         )
-        run.add_argument(
-            "--mode",
-            choices=("compare", "validate", "record", "diagnose", "graph-cache"),
-            default="compare",
-        )
-        run.add_argument(
-            "--validation-samples",
-            type=int,
-            choices=(3, 21),
-            help="validation only: paired samples per scenario; 3 shortens cloud calibration",
-        )
-        run.add_argument("--candidate", default="HEAD")
-        run.add_argument("--baseline", type=Path)
-        run.add_argument("--cache", type=Path, default=DEFAULT_HOME / "cache")
-        run.add_argument("--runs", type=Path, default=DEFAULT_HOME / "runs")
-        run.add_argument("--max-hours", type=float, default=4)
-        run.add_argument("--budget-usd", type=float, default=1)
-        run.add_argument(
-            "--cloud", type=Path, help="pinned EC2 settings; launches only with run"
-        )
-        run.add_argument(
-            "--cloud-slot", type=int, choices=(1, 2, 3), default=1,
-            help="independent cloud launch slot; budgets apply to each run",
-        )
-        run.add_argument("--detach", action="store_true")
-        run.add_argument("--wait", action="store_true", help="cloud only: wait for termination and collect using this authenticated session")
-    worker = sub.add_parser("worker", help=argparse.SUPPRESS)
-    worker.add_argument("--config", required=True, type=Path)
-    analysis = sub.add_parser("reanalyze", help="recalculate raw measurements without rewriting the recording")
-    analysis.add_argument("run", type=Path)
-    analysis.add_argument("--output", required=True, type=Path)
-    analysis.add_argument("--baseline", type=Path)
-    aggregate = sub.add_parser(
-        "foundation", help="freeze calibrated reference from >=3 record sessions"
-    )
-    aggregate.add_argument("runs", nargs="+", type=Path)
-    aggregate.add_argument("--output", required=True, type=Path)
-    reconcile = sub.add_parser(
-        "cloud-reconcile", help="recover an expired interrupted cloud launch"
-    )
-    reconcile.add_argument("--cloud", required=True, type=Path)
-    reconcile.add_argument("--cloud-slot", type=int, choices=(1, 2, 3), default=1)
-    for action in ("status", "logs", "cancel", "report", "collect"):
-        control = sub.add_parser(action)
-        control.add_argument("run", type=Path)
-    return root
 
 
-def configuration(args) -> dict:
-    if args.cloud_slot != 1 and not args.cloud:
-        raise ValueError("--cloud-slot requires --cloud")
-    if args.wait and (not args.cloud or args.detach):
-        raise ValueError("--wait requires --cloud and cannot be combined with --detach")
-    profile = read_json(BENCHMARKS / "profiles" / (args.profile + ".json"))
-    if args.mode == "diagnose":
-        if args.profile != "cloud-standard" or not args.cloud or args.baseline:
-            raise ValueError("diagnose requires cloud-standard and --cloud, without --baseline")
-        profile = profile | {
-            "name": "sqlite-diagnostic",
-            "samples": 100,
-            "quality": False,
-            "scenarios": ["deleted_1pct", "modified_query_image", "modified_1pct", "renamed_1pct"],
-            "batches": ["untraced", "strace"],
-        }
-    elif args.mode == "graph-cache":
-        if args.profile != "cloud-standard" or not args.cloud or args.baseline:
-            raise ValueError(
-                "graph-cache requires cloud-standard and --cloud, without --baseline"
-            )
-        profile = profile | {
-            "name": "graph-cache-diagnostic",
-            "samples": 21,
-            "quality": False,
-            "scenarios": [
-                "novel_text",
-                "external_image_first",
-                "persistent_text",
-                "cached_text",
-            ],
-        }
-    if args.validation_samples is not None:
-        if args.mode != "validate":
-            raise ValueError("--validation-samples requires --mode validate")
-        profile["samples"] = args.validation_samples
-        profile["calibration_batches"] = (
-            3 if args.profile == "local-quick" else (1 if args.validation_samples == 3 else 3)
-        )
-    if args.max_hours <= 0 or args.max_hours > 24 or args.budget_usd <= 0:
-        raise ValueError("runtime must be in (0,24] hours and budget must be positive")
-    cache = outside_repository(args.cache)
-    runs = outside_repository(args.runs)
-    selection = BENCHMARKS / "corpora" / f"coco-{profile['corpus_size']}.json"
-    corpus = cache / "corpora" / (digest(selection) + ".json")
-    sha = command(
-        ["git", "rev-parse", "--verify", args.candidate + "^{commit}"], cwd=ROOT
-    ).strip()
-    foundation_sha = command(
-        ["git", "rev-parse", "--verify", FOUNDATION + "^{commit}"], cwd=ROOT
-    ).strip()
-    if args.mode in ("record", "validate", "diagnose"):
-        sha = foundation_sha
-    hourly = 0.26 if args.cloud else 0
-    budget_usd = min(args.budget_usd, 0.30) if args.mode == "graph-cache" else args.budget_usd
-    seconds = int(
-        min(
-            args.max_hours * 3600,
-            budget_usd / hourly * 3600 if hourly else float("inf"),
-        )
-    )
-    if args.mode == "diagnose":
-        seconds = min(seconds, 3600)
-    elif args.mode == "graph-cache":
-        seconds = min(seconds, 3600)
-    return {
-        "cloud_slot": args.cloud_slot,
-        "schema_version": 1,
-        "directory": str(
-            runs / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
-        ),
-        "profile": profile,
-        "candidate": sha,
-        "foundation_sha": foundation_sha,
-        "mode": args.mode,
-        "baseline": str(args.baseline.resolve()) if args.baseline else None,
-        "cache": str(cache),
-        "corpus": str(corpus),
-        "corpus_sha256": digest(corpus) if corpus.exists() else None,
-        "max_seconds": seconds,
-        "command_timeout_seconds": seconds,
-        "hourly_budget_usd": hourly,
-        "budget_usd": budget_usd,
+def compare(args):
+    if args.samples < 1:
+        raise ValueError('samples must be positive')
+    scenarios = list(SCENARIOS) if args.scenarios == 'all' else args.scenarios.split(',')
+    if not scenarios or any(s not in SCENARIOS for s in scenarios) or len(set(scenarios)) != len(scenarios):
+        raise ValueError('invalid or duplicate scenario')
+    shas = [resolve(args.ref), resolve(args.cand)]
+    rows = inputs()
+    verify(rows)
+    ram = ram_bytes()
+    if ram < 8 * 1024**3:
+        print('warning: less than 8 GiB RAM may affect benchmark results', file=sys.stderr)
+    binaries = [build(sha) for sha in shas]
+    report = {
+        'reference': shas[0],
+        'candidate': shas[1],
+        'machine': {
+            'platform': platform.platform(),
+            'cpu_count': os.cpu_count(),
+            'ram_bytes': ram,
+        },
+        'flags': {
+            'samples': args.samples,
+            'corpus': '500',
+            'scenarios': scenarios,
+            'allow_output_changes': args.allow_output_changes,
+        },
+        'scenarios': {},
     }
+    differences = []
+    with tempfile.TemporaryDirectory(prefix='vg-', dir='/tmp') as tmp:
+        states = [stage(Path(tmp) / str(i), binaries[i], rows) for i in range(2)]
+        for state in states:
+            run(state)
+            checkpoint(state)
+            shutil.copyfile(state['index'], state['root'] / 'seed.db')
+            state['stamps'] = {r['file_name']: (state['images'] / r['file_name']).stat().st_mtime_ns for r in rows}
+        for scenario in scenarios:
+            if scenario == 'server_novel_text':
+                help_results = [
+                    subprocess.run([str(binary), 'serve', '--help'], capture_output=True)
+                    for binary in dict.fromkeys(binaries)
+                ]
+                supported = all(
+                    result.returncode == 0 and b'--socket' in result.stdout
+                    for result in help_results
+                )
+                if not supported:
+                    print('server_novel_text skipped: serve --socket is unavailable', file=sys.stderr)
+                    continue
+            print(f'running {scenario}...', file=sys.stderr, flush=True)
+            servers = []
+            try:
+                for state in states:
+                    reset(state, scenario)
+                    if scenario == 'server_novel_text':
+                        servers.append(start_server(state))
+                    run(state, query='warmup ' + TEXT, image=state['external'] if scenario == 'external_image' else None)
+                samples = [[], []]
+                for n in range(args.samples):
+                    for i in sample_order(n):
+                        state = states[i]
+                        if scenario != 'server_novel_text':
+                            reset(state, scenario)
+                        query = f'{TEXT} novel {n}' if scenario in ('novel_text', 'server_novel_text') else TEXT
+                        if servers and servers[i][0].poll() is not None:
+                            raise RuntimeError('benchmark server exited before the sample')
+                        result = run(state, query=query, image=state['external'] if scenario == 'external_image' else None)
+                        if servers and servers[i][0].poll() is not None:
+                            raise RuntimeError('benchmark server exited during the sample')
+                        samples[i].append(result)
+                        if scenario == 'changed_1pct':
+                            restore_images(state)
+                    difference = output_difference(samples[0][-1]['results'], samples[1][-1]['results'])
+                    if difference:
+                        differences.append(f'{scenario} sample {n + 1}: {difference}')
+            finally:
+                for child, log in servers:
+                    child.terminate()
+                    child.wait()
+                    log.close()
+            report['scenarios'][scenario] = {'reference': samples[0], 'candidate': samples[1]}
+    CACHE.joinpath('runs').mkdir(parents=True, exist_ok=True)
+    name = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ') + f'-{shas[0][:12]}-{shas[1][:12]}.json'
+    path = CACHE / 'runs' / name
+    path.write_text(json.dumps(report, indent=2) + '\n')
+    print_report(report)
+    print(f'raw samples: {path}')
+    if differences:
+        print(f'output difference: {differences[0]}', file=sys.stderr)
+        if not args.allow_output_changes:
+            raise ValueError('outputs differ; use --allow-output-changes to accept')
+
+
+def quality_command(args):
+    shas = [resolve(ref) for ref in (args.ref, args.cand) if ref]
+    rows = inputs()
+    verify(rows)
+    specification = read(HERE / 'corpora/quality-500.json')
+    all_runs = []
+    with tempfile.TemporaryDirectory(prefix='vg-quality-', dir='/tmp') as tmp:
+        for i, sha in enumerate(shas):
+            state = stage(Path(tmp) / str(i), build(sha), rows)
+            run(state)
+            runs = []
+            for n, query in enumerate(specification['queries']):
+                print(f'quality {sha[:12]}: {n + 1}/{len(specification["queries"])}', file=sys.stderr, end='\r', flush=True)
+                result = run(state, query=query['query'], top=len(rows))
+                if len(result['results']) != len(rows):
+                    raise ValueError('quality requires a score for every image')
+                runs.append(query | {'results': result['results']})
+            all_runs.append(runs)
+    print(file=sys.stderr)
+    metrics = [quality.evaluate(runs, specification['threshold']) for runs in all_runs]
+    print(f'{"metric":30} {shas[0][:12]:>12}' + (f' {shas[1][:12]:>12} {"difference":>12}' if len(shas) == 2 else ''))
+    for name, value in metrics[0].items():
+        print(f'{name:30} {value:12.4f}' + (f' {metrics[1][name]:12.4f} {metrics[1][name]-value:12.4f}' if len(metrics) == 2 else ''))
+    if len(shas) == 2:
+        print(f'top-10 identical: {quality.top10_agreement(*all_runs):.4f}')
+
+
+def add_compare_flags(parser):
+    parser.add_argument('--samples', type=int, default=15)
+    parser.add_argument('--scenarios', default=','.join(SCENARIOS[1:]))
+    parser.add_argument('--allow-output-changes', action='store_true')
 
 
 def main():
-    args = parser().parse_args()
-    if args.action == "prepare":
-        assets.prepare(
-            args.cache,
-            BENCHMARKS / "corpora" / f"coco-{args.corpus}.json",
-            args.import_models,
-        )
-        print(f"Prepared immutable artifact cache: {args.cache}")
-    elif args.action in ("plan", "run"):
-        config = configuration(args)
-        if args.action == "plan":
-            print(
-                json.dumps(
-                    config
-                    | {
-                        "note": "cost ceiling, not runtime prediction; pilot durations are not recorded yet",
-                        "maximum_estimated_cost_usd": config["max_seconds"]
-                        / 3600
-                        * config["hourly_budget_usd"],
-                    },
-                    indent=2,
-                )
-            )
-            return
-        if config["corpus_sha256"] is None:
-            raise ValueError("run prepare before benchmarking")
-        if config["mode"] == "compare" and not args.baseline:
-            raise ValueError(
-                "comparison requires --baseline; start with --mode validate"
-            )
-        if config["profile"]["cloud"] != bool(args.cloud):
-            raise ValueError(
-                "cloud profiles require --cloud; use local-quick on the MacBook"
-            )
-        directory = Path(config["directory"])
-        directory.mkdir(parents=True, exist_ok=False)
-        write_json(directory / "config.json", config)
-        if args.cloud:
-            handle = cloud.launch(config, args.cloud)
-            print(json.dumps(handle, indent=2))
-            print(directory, flush=True)
-            if args.wait:
-                while True:
-                    state = cloud.status(directory)
-                    print(json.dumps(state), flush=True)
-                    if state["instance_state"] == "terminated":
-                        break
-                    time.sleep(20)
-                cloud.collect(directory)
-                result = read_json(directory / "remote/report.json")["verdict"]
-                print(f"Collected: {directory / 'remote'} ({result})", flush=True)
-                if result in ("invalid", "cancelled", "validation_failed", "diagnostic_incomplete"):
-                    raise SystemExit(2)
-        elif args.detach:
-            with (directory / "worker.log").open("w") as log:
-                subprocess.Popen(
-                    [
-                        sys.executable,
-                        str(BENCHMARKS / "bench.py"),
-                        "worker",
-                        "--config",
-                        str(directory / "config.json"),
-                    ],
-                    stdout=log,
-                    stderr=log,
-                    start_new_session=True,
-                )
-        else:
-            result = runner.worker(directory / "config.json")
-            print(result)
-            if result in ("invalid", "cancelled", "validation_failed"):
-                print(directory)
-                raise SystemExit(2)
-        print(directory)
-    elif args.action == "worker":
-        result = runner.worker(args.config)
-        print(result)
-        if result in ("invalid", "cancelled", "validation_failed"):
-            raise SystemExit(2)
-    elif args.action == "reanalyze":
-        print(runner.reanalyze(args.run, outside_repository(args.output), args.baseline))
-    elif args.action == "foundation":
-        result = runner.foundation(args.runs, outside_repository(args.output))
-        if result:
-            print(result)
-    elif args.action == "cloud-reconcile":
-        cloud.reconcile(args.cloud, slot=args.cloud_slot)
-    else:
-        directory = args.run.expanduser().resolve()
-        if args.action == "status":
-            value = (
-                cloud.status(directory)
-                if (directory / "cloud.json").exists()
-                else read_json(directory / "status.json")
-            )
-            if (directory / "heartbeat.json").exists():
-                value["heartbeat"] = read_json(directory / "heartbeat.json")
-            print(json.dumps(value, indent=2))
-        elif args.action == "cancel":
-            if (directory / "cloud.json").exists():
-                cloud.collect(directory, cancel=True)
-            else:
-                (directory / "cancel").touch()
-        elif args.action == "collect":
-            cloud.collect(directory)
-        elif args.action == "logs":
-            path = directory / "worker.log"
-            if not path.exists():
-                path = directory / "remote/bootstrap.log"
-            print(path.read_text()[-16000:])
-        elif args.action == "report":
-            if (
-                not (directory / "report.json").exists()
-                and (directory / "remote/report.json").exists()
-            ):
-                directory /= "remote"
-            print(report.render(directory))
-
-
-if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='action', required=True)
+    sub.add_parser('prepare')
+    p = sub.add_parser('compare')
+    p.add_argument('ref')
+    p.add_argument('cand')
+    add_compare_flags(p)
+    p = sub.add_parser('quality')
+    p.add_argument('ref')
+    p.add_argument('cand', nargs='?')
+    p = sub.add_parser('aws-run')
+    p.add_argument('ref')
+    p.add_argument('cand')
+    p.add_argument('--settings', type=Path, required=True)
+    add_compare_flags(p)
+    p.add_argument('--instance-type', default='c7a.xlarge')
+    p.add_argument('--max-minutes', type=int, default=60)
+    p.add_argument('--dry-run', action='store_true')
+    p = sub.add_parser('aws-fetch')
+    p.add_argument('run_id')
+    p.add_argument('--settings', type=Path, required=True)
+    p = sub.add_parser('aws-list')
+    p.add_argument('--settings', type=Path, required=True)
+    args = parser.parse_args()
     try:
-        main()
-    except (ValueError, RuntimeError, OSError) as error:
-        print(f"benchmark error: {error}", file=sys.stderr)
-        raise SystemExit(2)
+        if args.action == 'prepare':
+            prepare()
+        elif args.action == 'compare':
+            compare(args)
+        elif args.action == 'quality':
+            quality_command(args)
+        elif args.action == 'aws-run':
+            aws.run(args)
+        elif args.action == 'aws-fetch':
+            aws.fetch(args, print_report)
+        else:
+            aws.list_instances(args)
+    except (ValueError, OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f'error: {error}', file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
