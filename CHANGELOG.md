@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- Add `visiongrep serve --socket DIRECTORY`, an opt-in server that keeps the index and
+  model sessions loaded. Ordinary cached searches for the same directory and index use it
+  automatically while it is running and fall back to one-shot searches otherwise.
+  `--no-cache`, `--reindex`, `--verify-models` and `--timing` always run one-shot.
+- `serve` now requires exactly one of `--stdio` or `--socket`.
+- Refuse `--reindex` while a socket server is running for the same index.
+- Save optimized ONNX graphs under `models/optimized/` on first use and reuse compatible
+  graphs in later processes to reduce model startup time. The cache adds about 578 MiB of
+  disk and falls back to the source models when a graph cannot be used or saved.
+- Replace the benchmark harness with `benchmarks/bench.py`: `prepare`, paired
+  `compare` and `quality` runs, plus `aws-run`, `aws-fetch` and `aws-list` for
+  self-terminating EC2 comparisons.
+
 ## 0.2.0
 
 - Add `visiongrep serve --stdio DIRECTORY` for sequential JSONL searches in one process.
