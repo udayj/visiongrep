@@ -25,7 +25,7 @@ extra Rust dependencies. Run it again when pinned artifacts change. With models 
 subsequent test runs need neither the setup command nor network access.
 
 The model correctness tests cover single versus batched inference, dynamic batch dimensions,
-image/text golden vectors, and reference scores/rankings/thresholds. They load the shared installed
+image/text golden vectors and reference scores. They load the shared installed
 artifacts directly through `VisionSession::load` / `TextSession::load`, which do not download or
 replace artifacts. Each test owns its sessions and any generated images. Symlinks are needed by the
 CLI fixtures to isolate cache writes, but are unnecessary for these read-only model tests.
@@ -62,7 +62,7 @@ per test. On the first run both OS jobs may download a set because they cannot s
 
 The manually triggered model-contract workflow also runs these E2Es. Its optional
 `include_download_test` input additionally exercises a genuinely empty model cache. Run that test
-locally with network access (about 610 MB):
+locally with network access (about 375 MB):
 
 ```sh
 cargo test --release --test text_queries \

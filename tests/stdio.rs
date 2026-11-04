@@ -23,7 +23,7 @@ fn live_requests_refresh_images_reuse_models_and_recover_from_errors() {
         .save(&blue)
         .unwrap();
     let artifacts = [
-        "datacomp_vision.onnx",
+        "datacomp_vision_int8.onnx",
         "datacomp_text.onnx",
         "datacomp_tokenizer.json",
     ];

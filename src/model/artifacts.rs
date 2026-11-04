@@ -14,24 +14,24 @@ use crate::timing::{ModelMetadata, Phase, TimingRecorder};
 
 const VERIFIED_MANIFEST_VERSION: u32 = 1;
 const VERIFIED_MANIFEST_SUFFIX: &str = ".verified.json";
-const MODEL_CONTRACT: &str = "openclip-vit-b-32-256-datacomp-s34b-b86k-v1";
-const IMAGE_EMBEDDING_CONTRACT: &str = "openclip-vit-b-32-256-datacomp-s34b-b86k-v1;source=4afec35ffe57a943d569ff7ee888061830164da8;onnx=17b9d07433aad73f70d338d8a1c7a4cef83887e0;sha256=3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c;preprocess=rgb-short-edge-256-bicubic-center-crop-openai-clip-normalization";
+const MODEL_CONTRACT: &str = "openclip-vit-b-32-256-datacomp-s34b-b86k-vision-dynamic-int8-v1";
+const IMAGE_EMBEDDING_CONTRACT: &str = "openclip-vit-b-32-256-datacomp-s34b-b86k-v1;source=4afec35ffe57a943d569ff7ee888061830164da8;onnx=eb7afd0e67f255f36008bbd4b05cfcaeb47504f0;sha256=f6ae78a288ea20d48c0c6190200aa62dff66f5ccc4c7c2bb7f2d7999b4236ffe;quant=dynamic-int8-v1;preprocess=rgb-short-edge-256-bicubic-center-crop-openai-clip-normalization";
 const QUERY_EMBEDDING_CONTRACT: &str = "openclip-vit-b-32-256-datacomp-s34b-b86k-v1;source=4afec35ffe57a943d569ff7ee888061830164da8;onnx=17b9d07433aad73f70d338d8a1c7a4cef83887e0;sha256=ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc;tokenizer_sha256=72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85;tokens=openclip-77-pad-0";
 const OPENCLIP_MODEL_REVISION: &str = "4afec35ffe57a943d569ff7ee888061830164da8";
 const RCLIP_MODEL_REVISION: &str = "17b9d07433aad73f70d338d8a1c7a4cef83887e0";
-const VISION_MODEL_REVISION: &str = RCLIP_MODEL_REVISION;
+const VISION_MODEL_REVISION: &str = "eb7afd0e67f255f36008bbd4b05cfcaeb47504f0";
 const TEXT_MODEL_REVISION: &str = RCLIP_MODEL_REVISION;
 const TOKENIZER_REVISION: &str = OPENCLIP_MODEL_REVISION;
-const VISION_MODEL_URL: &str = "https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/visual.onnx";
+const VISION_MODEL_URL: &str = "https://huggingface.co/udayjjw/visiongrep/resolve/eb7afd0e67f255f36008bbd4b05cfcaeb47504f0/visual-int8-e.onnx";
 const TEXT_MODEL_URL: &str = "https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/textual.onnx";
 const TOKENIZER_URL: &str = "https://huggingface.co/laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K/resolve/4afec35ffe57a943d569ff7ee888061830164da8/tokenizer.json";
 
 pub(super) const VISION_MODEL_SHA256: &str =
-    "3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c";
+    "f6ae78a288ea20d48c0c6190200aa62dff66f5ccc4c7c2bb7f2d7999b4236ffe";
 pub(super) const TEXT_MODEL_SHA256: &str =
     "ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc";
 const TOKENIZER_SHA256: &str = "72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85";
-const VISION_MODEL_SIZE: u64 = 351_826_068;
+const VISION_MODEL_SIZE: u64 = 118_843_779;
 const TEXT_MODEL_SIZE: u64 = 254_344_274;
 const TOKENIZER_SIZE: u64 = 2_224_081;
 
@@ -110,7 +110,7 @@ pub(crate) fn model_paths() -> Result<ModelPaths, VisionGrepError> {
     })?;
 
     Ok(ModelPaths {
-        vision_model: model_dir.join("datacomp_vision.onnx"),
+        vision_model: model_dir.join("datacomp_vision_int8.onnx"),
         text_model: model_dir.join("datacomp_text.onnx"),
         tokenizer: model_dir.join("datacomp_tokenizer.json"),
     })

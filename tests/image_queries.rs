@@ -105,7 +105,7 @@ fn image_query_end_to_end() {
     let cache = scratch.path().join("cache");
     let models = cache.join("visiongrep/models");
     fs::create_dir(&corpus).unwrap();
-    model_cache::link_models(&cache, &["datacomp_vision.onnx"]);
+    model_cache::link_models(&cache, &["datacomp_vision_int8.onnx"]);
 
     let query = corpus.join("query.png");
     let duplicate = corpus.join("duplicate.png");

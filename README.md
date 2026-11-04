@@ -19,11 +19,17 @@ Required model artifacts are downloaded automatically on first use. They are sto
 or empty. Once the required models are cached, searches can run offline. An image query excludes
 the query image itself from results.
 
+The DataComp CLIP vision model uses dynamic INT8 quantization, with the final projection and first
+transformer block kept in FP32. The vision model is about 119 MB (down from 352 MB); the FP32 text
+model and tokenizer add about 257 MB. Changing the vision model causes existing indexes to re-embed
+images once on their next use.
+
 On first use, VisionGrep also saves an optimized ONNX graph under `models/optimized/` for each
 model it loads. Later processes reuse compatible graphs to reduce model startup work. The vision
 and text graphs are cached separately; the tokenizer is unchanged. The first use still pays the
-optimization and save cost, and optimized graphs require additional disk space. Already-running
-services reuse their loaded sessions.
+optimization and save cost. On Apple Silicon, the optimized vision and text graphs measured about
+119 MB and 254 MB respectively, adding about 373 MB of disk usage; sizes can vary by platform.
+Already-running services reuse their loaded sessions.
 
 Optimized graphs are tied to the source model, ONNX Runtime build and local hardware configuration.
 If an optimized graph cannot be used or saved, VisionGrep falls back to the original model.

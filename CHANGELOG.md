@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Use a dynamically quantized INT8 vision model with the final projection and first transformer
+  block kept in FP32. On COCO val2017 text-to-image retrieval, recall changed by -0.0035,
+  -0.0031, and -0.0044 at 1, 5, and 10 respectively, while per-image inference was 2.1–2.3×
+  faster on x86. Existing indexes re-embed images once on first use.
+
 ## 0.3.0
 
 - Add `visiongrep serve --socket DIRECTORY`, an opt-in server that keeps the index and

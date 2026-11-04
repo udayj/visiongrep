@@ -91,15 +91,14 @@ Two pinned ONNX files and their exact tokenizer, downloaded on first run:
 
 | File | Source | Size |
 |---|---|---|
-| `datacomp_vision.onnx` | rclip conversion of `laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K` | 351,826,068 bytes |
+| `datacomp_vision_int8.onnx` | Dynamically quantized rclip vision conversion of `laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K`; final projection and first transformer block remain FP32 | 118,843,779 bytes |
 | `datacomp_text.onnx` | matching rclip text encoder conversion | 254,344,274 bytes |
 | `datacomp_tokenizer.json` | pinned original OpenCLIP tokenizer contract | 2,224,081 bytes |
 
 Download destination: `~/.cache/visiongrep/models/`
 
-The model URLs use immutable Hugging Face revisions. Models, tokenizer, source OpenCLIP weights,
-conversion revisions, exact sizes, and SHA-256 values are recorded in
-`benchmarks/retrieval/benchmark_manifest.json`. Downloaded artifacts are hashed while streaming to
+The model URLs use immutable Hugging Face revisions. Artifact URLs, revisions, exact sizes, and
+SHA-256 values are recorded in `src/model/artifacts.rs`. Downloaded artifacts are hashed while streaming to
 a sibling temporary file and atomically installed only after size and checksum validation.
 
 Each installed artifact has a versioned verified-install manifest tied to the immutable revision,
@@ -269,7 +268,7 @@ are preserved.
 4. Resize the short edge to 256 with Pillow 12.3-compatible bicubic coefficients and rounding
 5. Take the centered 256×256 crop using Python round-half-to-even crop coordinates
 6. Normalize with CLIP mean `[0.48145466, 0.4578275, 0.40821073]` and std `[0.26862954, 0.26130258, 0.27577711]`
-7. Run through `datacomp_vision.onnx` — dynamic input `[N, 3, 256, 256]`, output `[N, 512]`
+7. Run through `datacomp_vision_int8.onnx` — dynamic input `[N, 3, 256, 256]`, output `[N, 512]`
 8. L2-normalize the output vector
 
 Tiny images are upscaled; portrait and landscape images retain their geometry. The pre-allocation
@@ -304,8 +303,8 @@ produce explicit skip events; worker, inference, cardinality, runtime, and datab
 ```
 $ visiongrep "sunset over water" ./photos/
 
-Downloading DataComp CLIP vision model (352 MB)...
-[████████████████████░░░░░░░░░░] 312/352 MB  4.2 MB/s  eta 9s
+Downloading DataComp CLIP vision model (119 MB)...
+[████████████████████░░░░░░░░░░] 80/119 MB  4.2 MB/s  eta 9s
 
 Downloading DataComp CLIP text model (254 MB)...
 [██████████████████████████████] 254/254 MB  done
