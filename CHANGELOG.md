@@ -4,8 +4,10 @@
 
 - Use a dynamically quantized INT8 vision model with the final projection and first transformer
   block kept in FP32. On COCO val2017 text-to-image retrieval, recall changed by -0.0035,
-  -0.0031, and -0.0044 at 1, 5, and 10 respectively, while per-image inference was 2.1–2.3×
-  faster on x86. Existing indexes re-embed images once on first use.
+  -0.0031, and -0.0044 at 1, 5, and 10 respectively. AWS c7a.xlarge end-to-end searches
+  are 61.5% faster for external images (871.4 → 335.6 ms) and 59.5% faster after 1% of
+  images change (990.0 → 400.6 ms). Text queries are unchanged. Existing indexes re-embed
+  images once on first use.
 
 ## 0.3.0
 

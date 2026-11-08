@@ -1,9 +1,9 @@
-import argparse
 import contextlib
 import datetime as dt
 import io
 import json
 import math
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -112,18 +112,31 @@ class AwsTests(unittest.TestCase):
         self.assertIn("s3://bench-bucket/runs/run-1/bootstrap.log", script)
 
     def test_script_dry_run_resolves_ref_and_passes_bucket(self):
-        args = argparse.Namespace(
-            action="aws-script", ref="feature/int8", script="benchmarks/model_contract/aws_coco_int8.sh",
-            settings="settings.json", instance_type="c7a.xlarge", max_minutes=60, dry_run=True,
-        )
-        with patch.object(aws, "settings_from", return_value=self.settings), \
+        argv = ['bench.py', 'aws-script', 'feature/int8', 'benchmarks/model_contract/aws_coco_int8.sh',
+                '--settings', 'settings.json', '--dry-run']
+        with patch.object(sys, "argv", argv), \
+             patch.object(aws, "settings_from", return_value=self.settings), \
              patch.object(aws, "resolve_remote", return_value=self.ref) as resolve, \
              patch.object(aws, "command") as command, contextlib.redirect_stdout(io.StringIO()) as output:
-            aws.run(args)
+            self.assertEqual(bench.main(), 0)
         resolve.assert_called_once_with("feature/int8")
         command.assert_not_called()
         self.assertIn(f"git checkout --detach {self.ref}", output.getvalue())
         self.assertIn("env BUCKET=bench-bucket bash -- benchmarks/model_contract/aws_coco_int8.sh", output.getvalue())
+        self.assertIn("scheduler create-schedule", output.getvalue())
+
+    def test_compare_dry_run_resolves_both_refs_and_passes_flags(self):
+        argv = ['bench.py', 'aws-run', 'v0.3.0', 'feature/int8', '--samples', '5',
+                '--scenarios', 'all', '--allow-output-changes', '--settings', 'settings.json', '--dry-run']
+        with patch.object(sys, "argv", argv), \
+             patch.object(aws, "settings_from", return_value=self.settings), \
+             patch.object(aws, "resolve_remote", side_effect=[self.ref, self.cand]) as resolve, \
+             patch.object(aws, "command") as command, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(bench.main(), 0)
+        self.assertEqual([call.args for call in resolve.call_args_list], [('v0.3.0',), ('feature/int8',)])
+        command.assert_not_called()
+        self.assertIn(f"git checkout --detach {self.cand}", output.getvalue())
+        self.assertIn(f"compare {self.ref} {self.cand} --samples 5 --scenarios all --allow-output-changes", output.getvalue())
         self.assertIn("scheduler create-schedule", output.getvalue())
 
     def test_schedule_command(self):

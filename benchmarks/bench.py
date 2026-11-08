@@ -428,7 +428,19 @@ def main():
         elif args.action == 'quality':
             quality_command(args)
         elif args.action in ('aws-run', 'aws-script'):
-            aws.run(args)
+            if args.action == 'aws-run':
+                aws.validate_compare_options(args.samples, args.scenarios)
+            settings = aws.settings_from(args.settings)
+            if args.action == 'aws-run':
+                ref, checkout = aws.resolve_remote(args.ref), aws.resolve_remote(args.cand)
+                flags = ['--samples', str(args.samples), '--scenarios', args.scenarios]
+                if args.allow_output_changes:
+                    flags.append('--allow-output-changes')
+                command_line = ['python3', 'benchmarks/bench.py', 'compare', ref, checkout, *flags]
+            else:
+                checkout = aws.resolve_remote(args.ref)
+                command_line = ['env', f"BUCKET={settings['bucket']}", 'bash', '--', args.script]
+            aws.run(args, settings, checkout, command_line)
         elif args.action == 'aws-fetch':
             aws.fetch(args, print_report)
         else:

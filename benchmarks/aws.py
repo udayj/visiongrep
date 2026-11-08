@@ -154,20 +154,8 @@ def schedule_command(settings, run_id, instance_id, launch_time, max_minutes):
     return command, deadline
 
 
-def run(args):
+def run(args, settings, checkout, command_line):
     validate_options(args.instance_type, args.max_minutes)
-    if args.action == "aws-run":
-        validate_compare_options(args.samples, args.scenarios)
-    settings = settings_from(args.settings)
-    if args.action == "aws-run":
-        ref, checkout = resolve_remote(args.ref), resolve_remote(args.cand)
-        flags = ["--samples", str(args.samples), "--scenarios", args.scenarios]
-        if args.allow_output_changes:
-            flags.append("--allow-output-changes")
-        command_line = ["python3", "benchmarks/bench.py", "compare", ref, checkout, *flags]
-    else:
-        checkout = resolve_remote(args.ref)
-        command_line = ["env", f"BUCKET={settings['bucket']}", "bash", "--", args.script]
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     run_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     script = user_data(settings, run_id, checkout, command_line, args.max_minutes)

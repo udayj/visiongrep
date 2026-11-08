@@ -12,10 +12,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import statistics
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -34,32 +32,19 @@ WARMUP = 3
 IMAGE_SIZE = 256
 MEAN = np.asarray([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)[:, None, None]
 STD = np.asarray([0.26862954, 0.2613026, 0.2757771], dtype=np.float32)[:, None, None]
-SWEEP_PATTERNS = {
-    "projection": r"/visual/MatMul",
-    "fc2": r"/visual/transformer/resblocks\.\d+/mlp/c_proj/MatMul",
-    "last block": r"/visual/transformer/resblocks\.11/.*",
-    "first block": r"/visual/transformer/resblocks\.0/.*",
-}
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--visual-fp32", type=Path, required=True)
-    parser.add_argument("--textual-fp32", type=Path)
-    parser.add_argument("--visual-int8", type=Path)
+    parser.add_argument("--textual-fp32", type=Path, required=True)
+    parser.add_argument("--visual-int8", type=Path, required=True)
     parser.add_argument("--textual-int8", type=Path)
-    parser.add_argument("--tokenizer", type=Path)
+    parser.add_argument("--tokenizer", type=Path, required=True)
     parser.add_argument("--image-objects", type=Path)
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--coco", type=Path, help="directory containing val2017/ and annotations/")
-    mode.add_argument("--sweep", action="store_true", help="evaluate vision quantization variants")
+    parser.add_argument("--coco", type=Path, help="directory containing val2017/ and annotations/")
     args = parser.parse_args()
-    if args.sweep:
-        if args.image_objects is None:
-            parser.error("--image-objects is required with --sweep")
-    elif args.textual_fp32 is None or args.visual_int8 is None or args.tokenizer is None:
-        parser.error("--textual-fp32, --visual-int8 and --tokenizer are required without --sweep")
-    elif args.coco is None and (args.textual_int8 is None or args.image_objects is None):
+    if args.coco is None and (args.textual_int8 is None or args.image_objects is None):
         parser.error("--textual-int8 and --image-objects are required without --coco")
     return args
 
@@ -167,89 +152,6 @@ def quality_images(image_objects):
     return [row["file_name"] for row in rows], images
 
 
-def evaluate_sweep(args):
-    import importlib.metadata
-
-    import onnx
-    from onnxruntime.quantization import QuantType, quant_pre_process, quantize_dynamic
-
-    for package, expected in (("onnx", "1.20.1"), ("onnxruntime", "1.27.0")):
-        actual = importlib.metadata.version(package)
-        if actual != expected:
-            raise RuntimeError(f"{package} version must be {expected}, got {actual}")
-
-    _, images = quality_images(args.image_objects)
-    batch1 = [np.stack(images[i:i + 1]) for i in range(RUNS)]
-    batch8 = [np.stack(images[i:i + 8]) for i in range(0, RUNS * 8, 8)]
-    print("Evaluating fp32...", file=sys.stderr, flush=True)
-    session = create_session(args.visual_fp32)
-    fp32_batch1 = latency(session, batch1)
-    fp32_batch8 = latency(session, batch8)
-    fp32_vectors = image_embeddings(session, images)
-    del session
-
-    variants = (
-        ("a const-B", ()),
-        ("b + projection", ("projection",)),
-        ("c + fc2", ("projection", "fc2")),
-        ("d + last block", ("projection", "last block")),
-        ("e + first block", ("projection", "first block")),
-    )
-    print("Exclusion patterns (full node-name matches):")
-    for name, pattern in SWEEP_PATTERNS.items():
-        print(f"  {name}: {pattern}")
-    print(f"{'variant':16} {'mean cosine':>12} {'min cosine':>12} {'batch 1 ms':>12} {'batch 8 ms':>12} {'batch 8 speedup':>16} sha256")
-    print(f"{'fp32':16} {1.0:12.9f} {1.0:12.9f} {fp32_batch1 * 1000:12.3f} {fp32_batch8 * 1000:12.3f} {1.0:16.6f} -", flush=True)
-
-    with tempfile.TemporaryDirectory() as directory:
-        preprocessed = Path(directory) / "preprocessed.onnx"
-        quantized = Path(directory) / "variant.onnx"
-        # The vision graph's dynamic Reshape nodes defeat symbolic shape inference.
-        quant_pre_process(args.visual_fp32, preprocessed, skip_symbolic_shape=True)
-        nodes = onnx.load(preprocessed).graph.node
-        matches = {}
-        for name, pattern in SWEEP_PATTERNS.items():
-            matches[name] = []
-            for node in nodes:
-                if re.fullmatch(pattern, node.name):
-                    matches[name].append(node.name)
-                    # ORT converts Gemm nodes to MatMul before applying exclusions.
-                    if node.op_type == "Gemm":
-                        matches[name].append(node.name + "_MatMul")
-        if len(matches["projection"]) != 1 or len(matches["fc2"]) != 12:
-            raise ValueError("preprocessed graph does not contain the expected projection and 12 fc2 nodes")
-        if not matches["first block"] or not matches["last block"]:
-            raise ValueError("preprocessed graph is missing the first or last transformer block")
-        for label, exclusions in variants:
-            print(f"Evaluating variant {label}...", file=sys.stderr, flush=True)
-            nodes_to_exclude = sorted({node for name in exclusions for node in matches[name]})
-            quantize_dynamic(
-                preprocessed,
-                quantized,
-                weight_type=QuantType.QInt8,
-                per_channel=True,
-                op_types_to_quantize=["MatMul", "Gemm"],
-                nodes_to_exclude=nodes_to_exclude,
-                extra_options={"MatMulConstBOnly": True},
-            )
-            integer_nodes = {
-                node.name.removesuffix("_quant")
-                for node in onnx.load(quantized).graph.node
-                if node.op_type == "MatMulInteger"
-            }
-            if integer_nodes.intersection(nodes_to_exclude):
-                raise ValueError(f"variant {label} quantized an excluded node")
-            session = create_session(quantized)
-            batch1_time = latency(session, batch1)
-            batch8_time = latency(session, batch8)
-            vectors = image_embeddings(session, images)
-            del session
-            cosine = np.sum(fp32_vectors * vectors, axis=1)
-            print(f"{label:16} {np.mean(cosine):12.9f} {np.min(cosine):12.9f} "
-                  f"{batch1_time * 1000:12.3f} {batch8_time * 1000:12.3f} "
-                  f"{fp32_batch8 / batch8_time:16.6f} {sha256(quantized)}", flush=True)
-
-
 def coco_corpus(directory):
     annotation_path = directory / "annotations" / "captions_val2017.json"
     annotations = json.loads(annotation_path.read_text())
@@ -352,9 +254,6 @@ def main():
     args = parse_args()
     artifacts = {item["name"]: item for item in bench.read(BENCHMARKS / "artifacts.json")}
     verify(args.visual_fp32, artifacts["datacomp_vision.onnx"]["sha256"])
-    if args.sweep:
-        evaluate_sweep(args)
-        return
 
     for path, name in ((args.textual_fp32, "datacomp_text.onnx"),
                        (args.tokenizer, "datacomp_tokenizer.json")):
