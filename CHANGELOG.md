@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Use a dynamically quantized INT8 vision model with the final projection and first transformer
   block kept in FP32. On COCO val2017 text-to-image retrieval, recall changed by -0.0035,
