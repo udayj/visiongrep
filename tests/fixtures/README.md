@@ -10,7 +10,10 @@ cases cover landscape, portrait, and square geometry, and the queries include or
 screenshot, and Unicode text. Contract revisions and checksums are embedded in the fixture.
 The quantized vision model is compared with the FP32 reference using a cosine tolerance; its
 scores use an absolute tolerance because quantization can change scores and rankings. Dynamic
-activation quantization can also make batched and single-image outputs differ slightly.
+activation quantization can also make batched and single-image outputs differ slightly. The
+batching test uses a black-and-white checkerboard and a red circle on blue, checks that their
+single-image embeddings are distinct, and requires each batched embedding to be closer to its
+own single-image embedding than to the other image's, with a loose cosine floor of 0.97.
 
 Vectors are stored as little-endian `f32` bytes encoded in hexadecimal to keep the fixture compact
 and preserve the reference bits without decimal formatting noise.

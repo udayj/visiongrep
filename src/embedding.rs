@@ -518,14 +518,23 @@ mod tests {
             directory.path().join("first.png"),
             directory.path().join("second.png"),
         ];
-        for (seed, path) in [17_u8, 113].into_iter().zip(&paths) {
-            let image = RgbImage::from_fn(320, 240, |x, y| {
-                Rgb([
-                    seed.wrapping_add(x as u8),
-                    seed.wrapping_add(y as u8),
-                    seed.wrapping_add((x + y) as u8),
-                ])
-            });
+        let images = [
+            RgbImage::from_fn(320, 240, |x, y| {
+                if (x / 32 + y / 32) % 2 == 0 {
+                    Rgb([0, 0, 0])
+                } else {
+                    Rgb([255, 255, 255])
+                }
+            }),
+            RgbImage::from_fn(320, 240, |x, y| {
+                if x.abs_diff(160).pow(2) + y.abs_diff(120).pow(2) < 80_u32.pow(2) {
+                    Rgb([255, 0, 0])
+                } else {
+                    Rgb([0, 0, 255])
+                }
+            }),
+        ];
+        for (image, path) in images.into_iter().zip(&paths) {
             image.save_with_format(path, ImageFormat::Png).unwrap();
         }
 
@@ -548,18 +557,29 @@ mod tests {
             .collect();
         let batched = embed_prepared_images(prepared, &mut session, &mut timing).unwrap();
 
-        for (single, batched) in singles.iter().zip(&batched) {
-            let max_absolute_error = single
-                .as_slice()
-                .iter()
-                .zip(batched.as_slice())
-                .map(|(left, right)| (left - right).abs())
-                .fold(0.0_f32, f32::max);
-            let cosine = single.dot(batched);
+        let singles_cosine = singles[0].dot(&singles[1]);
+        assert!(
+            singles_cosine < 0.95,
+            "test images must have distinct embeddings: singles cosine {singles_cosine}"
+        );
+        assert_eq!(batched.len(), singles.len());
+        for (index, batched) in batched.iter().enumerate() {
+            let cosine = singles[index].dot(batched);
+            // Allow for per-batch activation scales in dynamic INT8 quantization.
             assert!(
-                cosine >= 0.99,
-                "batched inference differs from single inference: max error {max_absolute_error}, cosine {cosine}"
+                cosine >= 0.97,
+                "image {index}: own cosine {cosine}, singles cosine {singles_cosine}"
             );
+            for (other_index, other) in singles.iter().enumerate() {
+                if other_index == index {
+                    continue;
+                }
+                let other_cosine = other.dot(batched);
+                assert!(
+                    cosine > other_cosine,
+                    "image {index}: own cosine {cosine} must exceed image {other_index} cosine {other_cosine}; singles cosine {singles_cosine}"
+                );
+            }
         }
     }
 
