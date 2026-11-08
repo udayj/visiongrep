@@ -60,9 +60,9 @@ def validate_compare_options(samples, scenarios):
             raise ValueError("invalid or duplicate scenario")
 
 
-def user_data(settings, run_id, ref, cand, flags, max_minutes):
+def user_data(settings, run_id, checkout, command_line, max_minutes):
     prefix = f"s3://{settings['bucket']}/runs/{run_id}/"
-    compare = shlex.join(["python3", "benchmarks/bench.py", "compare", ref, cand, *flags])
+    benchmark_command = shlex.join(command_line)
     return f'''#!/bin/bash
 shutdown -h +{max_minutes}
 export HOME=/root
@@ -90,9 +90,9 @@ fi
 export PATH="$HOME/.cargo/bin:$PATH"
 git clone {shlex.quote(REPOSITORY)} /opt/visiongrep
 cd /opt/visiongrep
-git checkout --detach {shlex.quote(cand)}
+git checkout --detach {shlex.quote(checkout)}
 python3 benchmarks/bench.py prepare
-{compare}
+{benchmark_command}
 '''
 
 
@@ -154,17 +154,11 @@ def schedule_command(settings, run_id, instance_id, launch_time, max_minutes):
     return command, deadline
 
 
-def run(args):
+def run(args, settings, checkout, command_line):
     validate_options(args.instance_type, args.max_minutes)
-    validate_compare_options(args.samples, args.scenarios)
-    settings = settings_from(args.settings)
-    ref, cand = resolve_remote(args.ref), resolve_remote(args.cand)
-    flags = ["--samples", str(args.samples), "--scenarios", args.scenarios]
-    if args.allow_output_changes:
-        flags.append("--allow-output-changes")
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     run_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
-    script = user_data(settings, run_id, ref, cand, flags, args.max_minutes)
+    script = user_data(settings, run_id, checkout, command_line, args.max_minutes)
     instance_args = instance_command(settings, run_id, args.instance_type, script)
     schedule_args, deadline = schedule_command(settings, run_id, "INSTANCE_ID", now, args.max_minutes)
     if args.dry_run:

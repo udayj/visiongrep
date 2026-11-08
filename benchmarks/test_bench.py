@@ -1,6 +1,9 @@
+import contextlib
 import datetime as dt
+import io
 import json
 import math
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -79,7 +82,8 @@ class AwsTests(unittest.TestCase):
 
     def test_user_data_and_instance_command(self):
         flags = ["--samples", "5", "--scenarios", "all", "--allow-output-changes"]
-        script = aws.user_data(self.settings, "run-1", self.ref, self.cand, flags, 60)
+        command_line = ["python3", "benchmarks/bench.py", "compare", self.ref, self.cand, *flags]
+        script = aws.user_data(self.settings, "run-1", self.cand, command_line, 60)
         self.assertEqual(script.splitlines()[1], "shutdown -h +60")
         self.assertEqual(script.splitlines()[2], "export HOME=/root")
         before_home = script.split("export HOME=/root", 1)[0]
@@ -98,6 +102,42 @@ class AwsTests(unittest.TestCase):
         self.assertIn({"Key": "RunId", "Value": "run-1"}, tags)
         volume = json.loads(args[args.index("--block-device-mappings") + 1])[0]["Ebs"]
         self.assertEqual(volume, {"VolumeSize": 40, "VolumeType": "gp3", "Encrypted": True, "DeleteOnTermination": True})
+
+    def test_script_command_reuses_bootstrap_and_quotes_arguments(self):
+        command_line = ["env", "BUCKET=bench-bucket", "bash", "--", "scripts/a file.sh"]
+        script = aws.user_data(self.settings, "run-1", self.ref, command_line, 60)
+        self.assertIn(f"git checkout --detach {self.ref}", script)
+        self.assertIn("python3 benchmarks/bench.py prepare\nenv BUCKET=bench-bucket bash -- 'scripts/a file.sh'", script)
+        self.assertIn("trap finish EXIT", script)
+        self.assertIn("s3://bench-bucket/runs/run-1/bootstrap.log", script)
+
+    def test_script_dry_run_resolves_ref_and_passes_bucket(self):
+        argv = ['bench.py', 'aws-script', 'feature/int8', 'benchmarks/model_contract/aws_coco_int8.sh',
+                '--settings', 'settings.json', '--dry-run']
+        with patch.object(sys, "argv", argv), \
+             patch.object(aws, "settings_from", return_value=self.settings), \
+             patch.object(aws, "resolve_remote", return_value=self.ref) as resolve, \
+             patch.object(aws, "command") as command, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(bench.main(), 0)
+        resolve.assert_called_once_with("feature/int8")
+        command.assert_not_called()
+        self.assertIn(f"git checkout --detach {self.ref}", output.getvalue())
+        self.assertIn("env BUCKET=bench-bucket bash -- benchmarks/model_contract/aws_coco_int8.sh", output.getvalue())
+        self.assertIn("scheduler create-schedule", output.getvalue())
+
+    def test_compare_dry_run_resolves_both_refs_and_passes_flags(self):
+        argv = ['bench.py', 'aws-run', 'v0.3.0', 'feature/int8', '--samples', '5',
+                '--scenarios', 'all', '--allow-output-changes', '--settings', 'settings.json', '--dry-run']
+        with patch.object(sys, "argv", argv), \
+             patch.object(aws, "settings_from", return_value=self.settings), \
+             patch.object(aws, "resolve_remote", side_effect=[self.ref, self.cand]) as resolve, \
+             patch.object(aws, "command") as command, contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(bench.main(), 0)
+        self.assertEqual([call.args for call in resolve.call_args_list], [('v0.3.0',), ('feature/int8',)])
+        command.assert_not_called()
+        self.assertIn(f"git checkout --detach {self.cand}", output.getvalue())
+        self.assertIn(f"compare {self.ref} {self.cand} --samples 5 --scenarios all --allow-output-changes", output.getvalue())
+        self.assertIn("scheduler create-schedule", output.getvalue())
 
     def test_schedule_command(self):
         launch = dt.datetime(2026, 1, 2, 3, 4, tzinfo=dt.timezone.utc)

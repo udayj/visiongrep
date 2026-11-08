@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 const QUERY: &str = "a red and blue picture";
 const ARTIFACTS: [&str; 3] = [
-    "datacomp_vision.onnx",
+    "datacomp_vision_int8.onnx",
     "datacomp_text.onnx",
     "datacomp_tokenizer.json",
 ];
@@ -203,7 +203,7 @@ fn assert_status(output: &Output, expected: i32) {
 }
 
 #[test]
-#[ignore = "downloads the pinned models (about 610 MB); requires network access"]
+#[ignore = "downloads the pinned models (about 375 MB); requires network access"]
 fn text_query_without_index_or_models_downloads_and_caches_artifacts() {
     let fixture = Fixture::with_images();
     assert!(!fixture.index().exists());

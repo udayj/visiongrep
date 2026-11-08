@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       include_download_test:
-        description: Test a text search with no index or model cache (downloads about 610 MB)
+        description: Test a text search with no index or model cache (downloads about 375 MB)
         type: boolean
         default: true
 
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ${{ env.MODEL_CACHE }}
-          key: model-contract-92c26d60-3f7e6f94-ee267cd6-924691ac
+          key: model-contract-92c26d60-3f7e6f94-f6ae78a2-ee267cd6-924691ac
       - name: Verify pinned rclip source
         run: test "$(git -C .benchmark-rclip rev-parse HEAD)" = 3dcec2de5e23311473f6fb6433e602aa4f4ca812
       - name: Install isolated reference dependencies
@@ -50,6 +50,8 @@ jobs:
             https://huggingface.co/laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K/resolve/4afec35ffe57a943d569ff7ee888061830164da8/open_clip_model.safetensors
           download "$MODEL_CACHE/visual.onnx" \
             https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/visual.onnx
+          download "$MODEL_CACHE/visual-int8-e.onnx" \
+            https://huggingface.co/udayjjw/visiongrep/resolve/eb7afd0e67f255f36008bbd4b05cfcaeb47504f0/visual-int8-e.onnx
           download "$MODEL_CACHE/textual.onnx" \
             https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/textual.onnx
           download "$MODEL_CACHE/bpe_simple_vocab_16e6.txt.gz" \
@@ -58,6 +60,7 @@ jobs:
             https://huggingface.co/laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K/resolve/4afec35ffe57a943d569ff7ee888061830164da8/tokenizer.json
           echo '92c26d60d3200ed5ed040dff31a8d19f8140648da8007216c25744c478deef27  '"$MODEL_CACHE/open_clip_model.safetensors" | sha256sum -c -
           echo '3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c  '"$MODEL_CACHE/visual.onnx" | sha256sum -c -
+          echo 'f6ae78a288ea20d48c0c6190200aa62dff66f5ccc4c7c2bb7f2d7999b4236ffe  '"$MODEL_CACHE/visual-int8-e.onnx" | sha256sum -c -
           echo 'ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc  '"$MODEL_CACHE/textual.onnx" | sha256sum -c -
           echo '924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a  '"$MODEL_CACHE/bpe_simple_vocab_16e6.txt.gz" | sha256sum -c -
           echo '72ed5c96db5729294468543e4bc75fce14ca63f58e37300290189ba1c1e52b85  '"$MODEL_CACHE/tokenizer.json" | sha256sum -c -
@@ -73,7 +76,7 @@ jobs:
       - name: Install shared artifacts for Rust correctness tests
         run: |
           mkdir -p "$XDG_CACHE_HOME/visiongrep/models"
-          cp "$MODEL_CACHE/visual.onnx" "$XDG_CACHE_HOME/visiongrep/models/datacomp_vision.onnx"
+          cp "$MODEL_CACHE/visual-int8-e.onnx" "$XDG_CACHE_HOME/visiongrep/models/datacomp_vision_int8.onnx"
           cp "$MODEL_CACHE/textual.onnx" "$XDG_CACHE_HOME/visiongrep/models/datacomp_text.onnx"
           cp "$MODEL_CACHE/tokenizer.json" "$XDG_CACHE_HOME/visiongrep/models/datacomp_tokenizer.json"
       - name: Run Rust unit, model correctness, and CLI end-to-end tests

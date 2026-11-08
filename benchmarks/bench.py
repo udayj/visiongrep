@@ -407,6 +407,13 @@ def main():
     p.add_argument('--instance-type', default='c7a.xlarge')
     p.add_argument('--max-minutes', type=int, default=60)
     p.add_argument('--dry-run', action='store_true')
+    p = sub.add_parser('aws-script')
+    p.add_argument('ref')
+    p.add_argument('script')
+    p.add_argument('--settings', type=Path, required=True)
+    p.add_argument('--instance-type', default='c7a.xlarge')
+    p.add_argument('--max-minutes', type=int, default=60)
+    p.add_argument('--dry-run', action='store_true')
     p = sub.add_parser('aws-fetch')
     p.add_argument('run_id')
     p.add_argument('--settings', type=Path, required=True)
@@ -420,8 +427,20 @@ def main():
             compare(args)
         elif args.action == 'quality':
             quality_command(args)
-        elif args.action == 'aws-run':
-            aws.run(args)
+        elif args.action in ('aws-run', 'aws-script'):
+            if args.action == 'aws-run':
+                aws.validate_compare_options(args.samples, args.scenarios)
+            settings = aws.settings_from(args.settings)
+            if args.action == 'aws-run':
+                ref, checkout = aws.resolve_remote(args.ref), aws.resolve_remote(args.cand)
+                flags = ['--samples', str(args.samples), '--scenarios', args.scenarios]
+                if args.allow_output_changes:
+                    flags.append('--allow-output-changes')
+                command_line = ['python3', 'benchmarks/bench.py', 'compare', ref, checkout, *flags]
+            else:
+                checkout = aws.resolve_remote(args.ref)
+                command_line = ['env', f"BUCKET={settings['bucket']}", 'bash', '--', args.script]
+            aws.run(args, settings, checkout, command_line)
         elif args.action == 'aws-fetch':
             aws.fetch(args, print_report)
         else:

@@ -366,7 +366,7 @@ fn novel_text_query_through_server_matches_one_shot() {
     model_cache::link_models(
         &fixture.cache,
         &[
-            "datacomp_vision.onnx",
+            "datacomp_vision_int8.onnx",
             "datacomp_text.onnx",
             "datacomp_tokenizer.json",
         ],

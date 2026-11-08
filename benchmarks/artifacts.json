@@ -5,6 +5,11 @@
     "sha256": "3f7e6f94e5a34bc7ee8aba84aec0f963f56974ab405fbcd334c8e1c3f832bd2c"
   },
   {
+    "name": "datacomp_vision_int8.onnx",
+    "url": "https://huggingface.co/udayjjw/visiongrep/resolve/eb7afd0e67f255f36008bbd4b05cfcaeb47504f0/visual-int8-e.onnx",
+    "sha256": "f6ae78a288ea20d48c0c6190200aa62dff66f5ccc4c7c2bb7f2d7999b4236ffe"
+  },
+  {
     "name": "datacomp_text.onnx",
     "url": "https://huggingface.co/yurijmikhalevich/rclip-models/resolve/17b9d07433aad73f70d338d8a1c7a4cef83887e0/ViT-B-32-256-datacomp_s34b_b86k/textual.onnx",
     "sha256": "ee267cd64f0f77362670ae0140476ed51ee8c5a761d41636e09997f2fdddcacc"
