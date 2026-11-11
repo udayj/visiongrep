@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 
 - Publish prebuilt macOS and Linux binaries with each GitHub release, installable with a shell
   installer or `cargo binstall visiongrep`. Add crates.io package metadata for
