@@ -6,8 +6,9 @@ It recursively searches JPEG, PNG, WebP, and BMP files without following symboli
 
 ## Install
 
-Prebuilt binaries are available for macOS (Apple Silicon and Intel) and Linux (x86_64 and
-arm64, glibc 2.35 or newer). Install the latest release into `~/.cargo/bin`:
+Prebuilt binaries are available for Apple Silicon macOS and Linux (x86_64 and arm64, glibc 2.39
+or newer, such as Ubuntu 24.04). Intel Macs are not supported because ONNX Runtime publishes no
+prebuilt CPU binaries for them. Install the latest release into `~/.cargo/bin`:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/udayj/visiongrep/releases/latest/download/visiongrep-installer.sh | sh
@@ -148,7 +149,7 @@ for preparation instructions and [benchmarks](benchmarks/README.md) for performa
 
 Releases are built by [dist](https://opensource.axo.dev/cargo-dist/) from
 `dist-workspace.toml`. Bump the version in `Cargo.toml`, update `CHANGELOG.md`, merge to `main`,
-then push a matching tag such as `v0.4.1`. The release workflow builds the four target archives,
+then push a matching tag such as `v0.4.1`. The release workflow builds the three target archives,
 the shell installer and checksums, and publishes them as a GitHub release. After checking the
 release, publish the crate with `cargo publish`. Run `dist generate` after changing the dist
 configuration or upgrading dist.
