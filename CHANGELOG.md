@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Publish prebuilt macOS and Linux binaries with each GitHub release, installable with a shell
+  installer or `cargo binstall visiongrep`. Add crates.io package metadata for
+  `cargo install visiongrep`.
+
 ## 0.4.0
 
 - Use a dynamically quantized INT8 vision model with the final projection and first transformer
