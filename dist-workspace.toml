@@ -1,0 +1,31 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.34.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Ship third-party license notices with every binary archive
+include = ["THIRD_PARTY_NOTICES.md", "third_party/"]
+# Whether to install an updater program
+install-updater = false
+# Build release artifacts in pull requests only as far as planning them
+pr-run-mode = "plan"
+
+# Linux binaries require at least the build runner's glibc, so build on the oldest supported Ubuntu.
+[dist.github-custom-runners]
+aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
+x86_64-unknown-linux-gnu = "ubuntu-22.04"

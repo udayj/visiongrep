@@ -2,6 +2,24 @@
 name = "visiongrep"
 version = "0.4.0"
 edition = "2024"
+rust-version = "1.89"
+description = "Semantic image search for local folders, scripts and AI agents, using CLIP locally"
+license = "MIT"
+repository = "https://github.com/udayj/visiongrep"
+homepage = "https://github.com/udayj/visiongrep"
+readme = "README.md"
+keywords = ["image-search", "clip", "semantic-search", "cli", "embeddings"]
+categories = ["command-line-utilities", "multimedia::images"]
+include = [
+    "/src/**",
+    "/third_party/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/README.md",
+    "/THIRD_PARTY_NOTICES.md",
+]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -24,3 +42,13 @@ walkdir = "2.5"
 codegen-units = 1
 lto = true
 strip = "symbols"
+
+# Release archives built by `dist` use the same settings as local release builds.
+[profile.dist]
+inherits = "release"
+
+# `cargo binstall visiongrep` downloads the archives published by the release workflow.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "txz"

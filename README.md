@@ -4,15 +4,25 @@ Search local images with a natural language description or a reference image. Vi
 Rust CLI that runs CLIP inference locally and caches embeddings in SQLite for repeated searches.
 It recursively searches JPEG, PNG, WebP, and BMP files without following symbolic links.
 
-## Build and run
+## Install
 
-Requires Rust/Cargo and a Unix platform (macOS or Linux).
+Prebuilt binaries are available for macOS (Apple Silicon and Intel) and Linux (x86_64 and
+arm64, glibc 2.35 or newer). Install the latest release into `~/.cargo/bin`:
 
 ```sh
-cargo build --release
-./target/release/visiongrep "a dog on a beach" ./photos
-./target/release/visiongrep --image ./reference.jpg ./photos
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/udayj/visiongrep/releases/latest/download/visiongrep-installer.sh | sh
 ```
+
+With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), `cargo binstall visiongrep`
+downloads the same binary. `cargo install visiongrep` builds from source and needs Rust 1.89 or
+newer plus a C compiler; the optimized build takes several minutes.
+
+```sh
+visiongrep "a dog on a beach" ./photos
+visiongrep --image ./reference.jpg ./photos
+```
+
+To build from a checkout, run `cargo build --release` and use `./target/release/visiongrep`.
 
 Required model artifacts are downloaded automatically on first use. They are stored in
 `$XDG_CACHE_HOME/visiongrep/models/`, or `~/.cache/visiongrep/models/` when `XDG_CACHE_HOME` is unset
@@ -39,12 +49,12 @@ Removing `models/optimized/` causes the graphs to be rebuilt on subsequent use.
 ## Options
 
 ```sh
-./target/release/visiongrep "sunset" ./photos --top 10 --threshold 0.3
-./target/release/visiongrep "sunset" ./photos --json
-./target/release/visiongrep "sunset" ./photos --paths-only
-./target/release/visiongrep "sunset" ./photos --index-path ./photos.db
-./target/release/visiongrep "sunset" ./photos --no-cache
-./target/release/visiongrep --help
+visiongrep "sunset" ./photos --top 10 --threshold 0.3
+visiongrep "sunset" ./photos --json
+visiongrep "sunset" ./photos --paths-only
+visiongrep "sunset" ./photos --index-path ./photos.db
+visiongrep "sunset" ./photos --no-cache
+visiongrep --help
 ```
 
 The default is up to five results with a minimum cosine similarity of `0.25`. Scores are
@@ -59,8 +69,8 @@ Start an opt-in server for a search directory to reuse its loaded models across 
 searches:
 
 ```sh
-./target/release/visiongrep serve --socket ./photos &
-./target/release/visiongrep "a dog on a beach" ./photos
+visiongrep serve --socket ./photos &
+visiongrep "a dog on a beach" ./photos
 ```
 
 The server runs in the foreground until stopped. Searches use it automatically when the search
@@ -73,7 +83,7 @@ run while a socket server is listening for the same root and index; stop the ser
 ## Persistent stdio searches
 
 ```sh
-./target/release/visiongrep serve --stdio --index-path photos.db ./photos
+visiongrep serve --stdio --index-path photos.db ./photos
 ```
 
 Keep the process open and send one JSON object per line on stdin:
@@ -133,3 +143,12 @@ cargo test --workspace -- --test-threads=1
 
 The full test suite needs cached model artifacts. See [test setup and coverage](tests/README.md)
 for preparation instructions and [benchmarks](benchmarks/README.md) for performance measurements.
+
+## Releasing
+
+Releases are built by [dist](https://opensource.axo.dev/cargo-dist/) from
+`dist-workspace.toml`. Bump the version in `Cargo.toml`, update `CHANGELOG.md`, merge to `main`,
+then push a matching tag such as `v0.4.1`. The release workflow builds the four target archives,
+the shell installer and checksums, and publishes them as a GitHub release. After checking the
+release, publish the crate with `cargo publish`. Run `dist generate` after changing the dist
+configuration or upgrading dist.
