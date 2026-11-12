@@ -31,19 +31,29 @@ fn main() {
 
 fn run() -> Result<ExitStatus, VisionGrepError> {
     let mut cli = Cli::parse();
-    if let Some(Subcommands::Serve {
-        path,
-        index_path,
-        mode,
-    }) = cli.subcommand.take()
-    {
-        return preserve_status_on_broken_pipe(
-            ExitStatus::Found,
-            match mode.mode() {
-                ServeMode::Stdio => crate::cli::serve(&path, index_path.as_deref()),
-                ServeMode::Socket => crate::cli::serve_socket(&path, index_path.as_deref()),
-            },
-        );
+    match cli.subcommand.take() {
+        Some(Subcommands::Serve {
+            path,
+            index_path,
+            mode,
+        }) => {
+            return preserve_status_on_broken_pipe(
+                ExitStatus::Found,
+                match mode.mode() {
+                    ServeMode::Stdio => crate::cli::serve(&path, index_path.as_deref()),
+                    ServeMode::Socket => crate::cli::serve_socket(&path, index_path.as_deref()),
+                },
+            );
+        }
+        Some(Subcommands::Index {
+            path,
+            index_path,
+            quiet,
+        }) => {
+            crate::cli::index(&path, index_path.as_deref(), quiet)?;
+            return Ok(ExitStatus::Found);
+        }
+        None => {}
     }
     let command = cli.into_command().unwrap_or_else(|error| error.exit());
     if command.request.is_reindex() && crate::cli::socket_server_running(&command.request) {

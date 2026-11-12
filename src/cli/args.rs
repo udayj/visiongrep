@@ -110,6 +110,15 @@ pub(crate) enum Subcommands {
         /// Directory to search recursively
         path: PathBuf,
     },
+    /// Index a directory and prepare both models without searching
+    Index {
+        #[arg(long, value_name = "PATH", help = "Store the index at PATH")]
+        index_path: Option<PathBuf>,
+        #[arg(short = 'q', long = "quiet", help = "Suppress progress output")]
+        quiet: bool,
+        /// Directory to index recursively
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -270,9 +279,43 @@ mod tests {
     }
 
     #[test]
+    fn index_requires_a_directory_and_accepts_index_options() {
+        let cli = Cli::try_parse_from([
+            "visiongrep",
+            "index",
+            "--index-path",
+            "photos.db",
+            "--quiet",
+            "photos",
+        ])
+        .unwrap();
+        let Some(Subcommands::Index {
+            path,
+            index_path,
+            quiet,
+        }) = cli.subcommand
+        else {
+            panic!("expected the index subcommand");
+        };
+        assert_eq!(path, PathBuf::from("photos"));
+        assert_eq!(index_path, Some(PathBuf::from("photos.db")));
+        assert!(quiet);
+        for args in [
+            vec!["visiongrep", "index"],
+            vec!["visiongrep", "index", "photos", "--top", "3"],
+            vec!["visiongrep", "index", "photos", "--no-cache"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "accepted {args:?}");
+        }
+    }
+
+    #[test]
     fn subcommand_name_can_still_be_a_literal_query() {
         let cli = Cli::try_parse_from(["visiongrep", "--top", "5", "serve", "photos"]).unwrap();
         assert_eq!(cli.query.as_deref(), Some("serve"));
+        assert!(cli.subcommand.is_none());
+        let cli = Cli::try_parse_from(["visiongrep", "--top", "5", "index", "photos"]).unwrap();
+        assert_eq!(cli.query.as_deref(), Some("index"));
         assert!(cli.subcommand.is_none());
     }
 

@@ -6,20 +6,7 @@ rust-version = "1.89"
 description = "Semantic image search for local folders, scripts and AI agents, using CLIP locally"
 license = "MIT"
 repository = "https://github.com/udayj/visiongrep"
-homepage = "https://github.com/udayj/visiongrep"
-readme = "README.md"
-keywords = ["image-search", "clip", "semantic-search", "cli", "embeddings"]
-categories = ["command-line-utilities", "multimedia::images"]
-include = [
-    "/src/**",
-    "/third_party/**",
-    "/Cargo.toml",
-    "/Cargo.lock",
-    "/CHANGELOG.md",
-    "/LICENSE",
-    "/README.md",
-    "/THIRD_PARTY_NOTICES.md",
-]
+publish = false
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -47,8 +34,6 @@ strip = "symbols"
 [profile.dist]
 inherits = "release"
 
-# `cargo binstall visiongrep` downloads the archives published by the release workflow.
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
-bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
-pkg-fmt = "txz"
+# `publish = false` would otherwise hide the binary from the dist release workflow.
+[package.metadata.dist]
+dist = true

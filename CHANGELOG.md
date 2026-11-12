@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add `visiongrep index DIR`, which downloads missing models, updates the index and prepares both
+  models without running a query, so the first search after it only embeds the query.
+- Report indexing progress as `Indexed N/TOTAL images` lines every 256 images when stderr is not a
+  terminal, instead of printing nothing until indexing finishes.
+- Document use with AI agents in the README.
+- Remove the `cargo binstall` metadata; VisionGrep is not published to crates.io.
+
 ## 0.4.1
 
 - Publish prebuilt macOS and Linux binaries with each GitHub release, installable with a shell

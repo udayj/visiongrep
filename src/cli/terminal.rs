@@ -136,6 +136,13 @@ impl Terminal {
             IngestEvent::ImageProcessed => {
                 if let Some(progress) = &self.progress {
                     progress.inc(1);
+                    // The bar is hidden when stderr is not a terminal, as for agents and logs.
+                    if progress.is_hidden()
+                        && let Some(line) =
+                            plain_progress_line(progress.position(), progress.length())
+                    {
+                        eprintln!("{line}");
+                    }
                 }
             }
             IngestEvent::ImageSkipped(error) => eprintln!("warning: {error}"),
@@ -175,6 +182,15 @@ impl Terminal {
             progress.finish_and_clear();
         }
     }
+}
+
+const PLAIN_PROGRESS_INTERVAL: u64 = 256;
+
+/// Periodic indexing progress for readers that cannot display a progress bar.
+fn plain_progress_line(processed: u64, total: Option<u64>) -> Option<String> {
+    let total = total?;
+    (processed.is_multiple_of(PLAIN_PROGRESS_INTERVAL) && processed < total)
+        .then(|| format!("Indexed {processed}/{total} images"))
 }
 
 fn write_path(output: &mut impl Write, path: &Path) -> io::Result<()> {
@@ -218,6 +234,23 @@ mod tests {
 
     fn result(path: PathBuf) -> SearchResult {
         SearchResult { score: 0.5, path }
+    }
+
+    #[test]
+    fn plain_progress_reports_every_interval_until_the_last_image() {
+        assert_eq!(plain_progress_line(1, Some(1000)), None);
+        assert_eq!(
+            plain_progress_line(256, Some(1000)).as_deref(),
+            Some("Indexed 256/1000 images")
+        );
+        assert_eq!(plain_progress_line(257, Some(1000)), None);
+        assert_eq!(
+            plain_progress_line(768, Some(1000)).as_deref(),
+            Some("Indexed 768/1000 images")
+        );
+        // Completion is reported by the command's own summary line.
+        assert_eq!(plain_progress_line(512, Some(512)), None);
+        assert_eq!(plain_progress_line(256, None), None);
     }
 
     #[test]
