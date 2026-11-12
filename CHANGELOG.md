@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2
 
 - Add `visiongrep index DIR`, which downloads missing models, updates the index and prepares both
   models without running a query, so the first search after it only embeds the query.
