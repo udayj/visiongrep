@@ -1,6 +1,6 @@
 [package]
 name = "visiongrep"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.89"
 description = "Semantic image search for local folders, scripts and AI agents, using CLIP locally"
