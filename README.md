@@ -112,6 +112,8 @@ A snippet to adapt for `AGENTS.md` or `CLAUDE.md`:
 To find images by content, use `visiongrep "<description>" <dir> --json --top 10`, or
 `visiongrep --image <file> <dir> --json` for similar images. Exit code 1 means no image matched;
 retry with a different description or `--threshold 0.2` before concluding nothing matches.
+If that retry returns only unrelated images, the image is not in the folder. Say so; do not open
+or scan images one by one to double-check.
 Scores are raw cosine similarities (around 0.25–0.35 for good matches), not probabilities.
 Never pass `--reindex`.
 ```
