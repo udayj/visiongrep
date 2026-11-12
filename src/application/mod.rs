@@ -224,6 +224,43 @@ fn refresh_index(
     Ok(())
 }
 
+pub(crate) struct IndexSummary {
+    pub(crate) images: usize,
+}
+
+/// Brings a directory's index up to date and prepares both models without running a query.
+///
+/// Loading the text session once also downloads its artifacts and saves its optimized graph, so
+/// the first search afterwards pays neither image embedding nor model preparation.
+pub(crate) fn prepare_index(
+    path: &Path,
+    index_path: Option<&Path>,
+    on_event: &mut impl FnMut(SearchEvent),
+) -> Result<IndexSummary, VisionGrepError> {
+    let mut timing = TimingRecorder::new(false, crate::model::timing_metadata());
+    validate_search_path(path)?;
+    let root = SearchRoot::resolve(path)?;
+    let files = discover_images(&root)?;
+    let location = IndexLocation::resolve(root.filesystem_path(), index_path)?;
+    let mut index = ImageIndex::open(&location, root.filesystem_path(), embedding_contract())?;
+    let mut models = Models::new(ArtifactVerification::Fast);
+    refresh_index(
+        &root,
+        &files,
+        &mut index,
+        &mut models,
+        on_event,
+        &mut timing,
+    )?;
+    models.load_text(
+        &mut |event| on_event(SearchEvent::Artifact(event)),
+        &mut timing,
+    )?;
+    Ok(IndexSummary {
+        images: index.image_count()?,
+    })
+}
+
 /// Owns one directory's index and lazy model sessions across sequential searches.
 pub(crate) struct SearchService {
     root: SearchRoot,

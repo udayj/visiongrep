@@ -1,9 +1,11 @@
 mod args;
+mod index;
 mod socket;
 mod stdio;
 mod terminal;
 
 pub(crate) use args::{Cli, ServeMode, Subcommands};
+pub(crate) use index::index;
 pub(crate) use socket::{
     serve as serve_socket, server_running as socket_server_running, try_search as try_socket_search,
 };

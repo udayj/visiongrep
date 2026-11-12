@@ -248,6 +248,45 @@ fn text_query_without_index_builds_index_with_installed_models() {
 }
 
 #[test]
+fn index_command_prepares_images_and_models_so_the_first_search_only_embeds_text() {
+    let fixture = Fixture::with_models();
+    let output = fixture
+        .command()
+        .arg("index")
+        .arg(&fixture.corpus)
+        .output()
+        .unwrap();
+    assert_status(&output, 0);
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Indexing 2 images"));
+    assert!(stderr.contains("Indexed 2 images in"));
+    assert_eq!(indexed_images(&fixture.index()).len(), 2);
+    assert!(cached_queries(&fixture.index()).is_empty());
+    let optimized = fixture.cache.join("visiongrep/models/optimized");
+    let graphs = fs::read_dir(optimized)
+        .unwrap()
+        .filter(|entry| {
+            entry.as_ref().unwrap().path().extension() == Some(std::ffi::OsStr::new("onnx"))
+        })
+        .count();
+    assert_eq!(graphs, 2, "expected optimized vision and text graphs");
+
+    let first = fixture.search(QUERY, &[]);
+    first.assert_inference(0, 1);
+
+    let quiet = fixture
+        .command()
+        .args(["index", "--quiet"])
+        .arg(&fixture.corpus)
+        .output()
+        .unwrap();
+    assert_status(&quiet, 0);
+    assert!(quiet.stdout.is_empty());
+    assert!(quiet.stderr.is_empty());
+}
+
+#[test]
 fn text_query_with_index_reuses_images_and_caches_each_query() {
     let fixture = Fixture::with_models();
     let fresh = fixture.search(QUERY, &[]);

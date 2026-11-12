@@ -279,6 +279,16 @@ impl ImageIndex {
         Ok(())
     }
 
+    pub(crate) fn image_count(&self) -> Result<usize, VisionGrepError> {
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM images", [], |row| row.get(0))?;
+        usize::try_from(count).map_err(|source| VisionGrepError::NumericConversion {
+            context: "counting indexed images",
+            source,
+        })
+    }
+
     /// Loads image embeddings while restoring exact native Unix path bytes and validating blobs.
     pub(crate) fn all_embeddings(
         &self,

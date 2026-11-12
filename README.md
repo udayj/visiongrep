@@ -4,6 +4,10 @@ Search local images with a natural language description or a reference image. Vi
 Rust CLI that runs CLIP inference locally and caches embeddings in SQLite for repeated searches.
 It recursively searches JPEG, PNG, WebP, and BMP files without following symbolic links.
 
+It is built to be called by scripts and AI coding agents as well as people: results go to stdout
+in stable text, JSON or NUL-separated formats, diagnostics go to stderr, and exit codes separate
+"no match" from errors. See [Use with AI agents](#use-with-ai-agents).
+
 ## Install
 
 Prebuilt binaries are available for Apple Silicon macOS and Linux (x86_64 and arm64, glibc 2.39
@@ -14,16 +18,14 @@ prebuilt CPU binaries for them. Install the latest release into `~/.cargo/bin`:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/udayj/visiongrep/releases/latest/download/visiongrep-installer.sh | sh
 ```
 
-With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), `cargo binstall visiongrep`
-downloads the same binary. `cargo install visiongrep` builds from source and needs Rust 1.89 or
-newer plus a C compiler; the optimized build takes several minutes.
-
 ```sh
 visiongrep "a dog on a beach" ./photos
 visiongrep --image ./reference.jpg ./photos
 ```
 
-To build from a checkout, run `cargo build --release` and use `./target/release/visiongrep`.
+To build from a checkout instead, run `cargo build --release` and use
+`./target/release/visiongrep`. Building needs Rust 1.89 or newer and a C compiler; the optimized
+build takes several minutes.
 
 Required model artifacts are downloaded automatically on first use. They are stored in
 `$XDG_CACHE_HOME/visiongrep/models/`, or `~/.cache/visiongrep/models/` when `XDG_CACHE_HOME` is unset
@@ -63,6 +65,56 @@ similarities, not probabilities. Results go to stdout; progress and diagnostics 
 Use `--null` for exact paths separated by NUL bytes, or `--quiet` to suppress progress.
 
 Exit codes are `0` for matches, `1` for no matches, and `2` for an operational or argument error.
+
+## Prepare a folder ahead of time
+
+```sh
+visiongrep index ./photos
+```
+
+`index` downloads any missing models, embeds new or changed images, and prepares both models'
+optimized graphs, without running a query. Afterwards the first search only needs to embed its
+query. It accepts `--index-path PATH` and `--quiet`, exits `0` on success and `2` on error, and
+writes nothing to stdout. Run it again at any time; unchanged images are skipped.
+
+Indexing saves its progress every 256 images, so an interrupted `index` or search resumes where
+it stopped when run again. An interrupted model download restarts that file. When stderr is not a
+terminal, progress is reported as `Indexed N/TOTAL images` lines instead of a progress bar.
+
+## Use with AI agents
+
+Coding agents with a shell, such as Claude Code or Codex, can call `visiongrep` directly. The
+first use of a folder is the slow part: it downloads about 375 MB of models and embeds every image,
+which can take minutes for a few thousand photos and exceed an agent's command timeout. Run
+`visiongrep index DIR` once yourself before handing the folder to an agent, or let the agent run
+it with a long timeout. After that, a new query takes well under a second and a repeated query
+takes a few milliseconds. If an agent's command is cut off while indexing, running it again
+continues from the saved progress.
+
+For many queries against one folder, start `visiongrep serve --socket DIR` in the background.
+Ordinary searches then use the loaded models automatically, with no change to the command.
+
+Output for agents:
+
+- `--json` prints an array of `{"path": ..., "score": ...}` objects, highest score first.
+- `--paths-only` prints one path per line; `-0` separates exact paths with NUL bytes.
+- Exit code `1` means the search worked and nothing passed the threshold. The default threshold is
+  deliberately conservative, so an empty result is more likely than an unrelated guess. Use
+  `--threshold -1` to always get the top results.
+- Progress, warnings and errors go to stderr only; `--quiet` suppresses progress.
+
+Concurrent searches can share an index. Do not run `--reindex` while other searches use the same
+index (see the known limitation below).
+
+A snippet to adapt for `AGENTS.md` or `CLAUDE.md`:
+
+```markdown
+To find images by content, use `visiongrep "<description>" <dir> --json --top 10`, or
+`visiongrep --image <file> <dir> --json` for similar images. Exit code 1 means no image matched;
+retry with a different description or `--threshold 0.2` before concluding nothing matches.
+Scores are raw cosine similarities (around 0.25–0.35 for good matches), not probabilities.
+Never pass `--reindex`.
+```
 
 ## Persistent socket server
 
@@ -105,8 +157,8 @@ Provide exactly one non-blank `query` or non-empty `image` path. `top` defaults 
 be positive; `threshold` defaults to 0.25 and accepts -1 through 1. The optional `id` is a
 string or unsigned 64-bit integer and is echoed back (omitted/null IDs return null). Unknown
 fields are rejected. Paths follow the usual CLI rules: relative paths use the process's working
-directory, and JSON requires UTF-8 paths. To search for the literal word `serve` in one-shot
-mode, place a search option first: `visiongrep --top 5 serve ./photos`.
+directory, and JSON requires UTF-8 paths. To search for the literal word `serve` or `index` in
+one-shot mode, place a search option first: `visiongrep --top 5 serve ./photos`.
 
 Before each search, the service scans for additions, modifications and deletions and updates the
 index. SQLite stays open; text and vision models load only when needed and remain resident until
@@ -150,6 +202,5 @@ for preparation instructions and [benchmarks](benchmarks/README.md) for performa
 Releases are built by [dist](https://opensource.axo.dev/cargo-dist/) from
 `dist-workspace.toml`. Bump the version in `Cargo.toml`, update `CHANGELOG.md`, merge to `main`,
 then push a matching tag such as `v0.4.1`. The release workflow builds the three target archives,
-the shell installer and checksums, and publishes them as a GitHub release. After checking the
-release, publish the crate with `cargo publish`. Run `dist generate` after changing the dist
-configuration or upgrading dist.
+the shell installer and checksums, and publishes them as a GitHub release. Run `dist generate`
+after changing the dist configuration or upgrading dist. The crate is not published to crates.io.
