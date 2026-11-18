@@ -35,6 +35,7 @@ impl Terminal {
 
     pub(crate) fn handle_event(&mut self, event: SearchEvent) {
         match event {
+            SearchEvent::WaitingForIndex => self.waiting_for_index(),
             SearchEvent::Index(event) => self.handle_ingest_event(event),
             SearchEvent::Artifact(event) => self.handle_artifact_event(event),
         }
@@ -44,6 +45,7 @@ impl Terminal {
         use super::socket::Event;
 
         match event {
+            Event::WaitingForIndex => self.waiting_for_index(),
             Event::IndexStarted { total } => {
                 self.handle_ingest_event(IngestEvent::Started { total })
             }
@@ -66,6 +68,12 @@ impl Terminal {
                 self.handle_artifact_event(ArtifactEvent::BytesRead { bytes })
             }
             Event::DownloadFinished => self.handle_artifact_event(ArtifactEvent::DownloadFinished),
+        }
+    }
+
+    fn waiting_for_index(&self) {
+        if !self.quiet {
+            eprintln!("waiting for another visiongrep request to finish with this index");
         }
     }
 
@@ -147,6 +155,7 @@ impl Terminal {
             }
             IngestEvent::ImageSkipped(error) => eprintln!("warning: {error}"),
             IngestEvent::Finished => self.finish_progress(),
+            IngestEvent::Artifact(event) => self.handle_artifact_event(event),
         }
     }
 

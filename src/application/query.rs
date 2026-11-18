@@ -56,7 +56,7 @@ impl ResolvedQuery<'_> {
         root: &SearchRoot,
         mut images: Vec<ImageRecord>,
         index: Option<&mut ImageIndex>,
-        models: &mut Models,
+        models: &Models,
         on_event: &mut impl FnMut(ArtifactEvent),
         timing: &mut TimingRecorder,
     ) -> Result<Option<PreparedQuery>, VisionGrepError> {
@@ -82,9 +82,10 @@ impl ResolvedQuery<'_> {
                         if images.is_empty() {
                             return Ok(None);
                         }
-                        let session = models.vision(on_event, timing)?;
                         // Only discovered corpus images belong in the persistent image index.
-                        embed_prepared_image(prepared, session, timing)?
+                        models.with_vision(on_event, timing, |session, timing| {
+                            embed_prepared_image(prepared, session, timing)
+                        })?
                     }
                 }
             }
@@ -97,7 +98,7 @@ impl ResolvedQuery<'_> {
 fn prepare_text(
     text: &str,
     index: Option<&mut ImageIndex>,
-    models: &mut Models,
+    models: &Models,
     on_event: &mut impl FnMut(ArtifactEvent),
     timing: &mut TimingRecorder,
 ) -> Result<NormalizedEmbedding, VisionGrepError> {
@@ -112,8 +113,9 @@ fn prepare_text(
         None => timing.set_query_cache_state(CacheState::NotApplicable),
     }
 
-    let session = models.load_text(on_event, timing)?;
-    let embedding = embed_text(text, session, timing)?;
+    let embedding = models.with_text(on_event, timing, |session, timing| {
+        embed_text(text, session, timing)
+    })?;
     if let Some(index) = index {
         let writes_started = timing.start();
         index.upsert_query_embedding(text, &embedding)?;
@@ -170,14 +172,14 @@ mod tests {
                 embedding: embedding(),
             },
         ];
-        let mut models = Models::new(ArtifactVerification::Fast);
+        let models = Models::new(ArtifactVerification::Fast);
         let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
         let prepared = ResolvedQuery::Image(query)
             .prepare(
                 &root,
                 images,
                 None,
-                &mut models,
+                &models,
                 &mut |_| panic!("query embedding is already available"),
                 &mut timing,
             )

@@ -198,7 +198,7 @@ fn image_query_end_to_end() {
         .arg("--image")
         .arg(&external)
         .arg(&corpus)
-        .args(["--quiet", "--json", "--reindex"])
+        .args(["--no-server", "--quiet", "--json", "--reindex"])
         .env("XDG_CACHE_HOME", &cache)
         .output()
         .unwrap();

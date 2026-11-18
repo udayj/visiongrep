@@ -1,5 +1,8 @@
 use std::ffi::OsString;
+use std::fs::{self, File};
+use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -35,16 +38,13 @@ pub(crate) struct IndexLocation {
 impl IndexLocation {
     /// Resolves custom relative paths against the process working directory.
     ///
-    /// The parent is canonicalized while the database filename is preserved because the database
-    /// need not exist yet. The default remains search-root-local for compatibility.
+    /// Resolves aliases so a database and its lock always use the same filesystem location.
     pub(crate) fn resolve(
         search_root: &Path,
         requested: Option<&Path>,
     ) -> Result<Self, VisionGrepError> {
         let Some(requested) = requested else {
-            return Ok(Self {
-                path: search_root.join(INDEX_FILE_NAME),
-            });
+            return Self::validate(search_root.join(INDEX_FILE_NAME));
         };
         if requested.file_name().is_none() {
             return Err(VisionGrepError::IndexPathWithoutFileName {
@@ -58,9 +58,6 @@ impl IndexLocation {
                 .map_err(VisionGrepError::Io)?
                 .join(requested)
         };
-        if path.is_dir() {
-            return Err(VisionGrepError::IndexPathIsDirectory { path });
-        }
         let parent = path
             .parent()
             .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName { path: path.clone() })?;
@@ -75,9 +72,49 @@ impl IndexLocation {
         let file_name = path
             .file_name()
             .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName { path: path.clone() })?;
-        Ok(Self {
-            path: canonical_parent.join(file_name),
-        })
+        Self::validate(canonical_parent.join(file_name))
+    }
+
+    fn validate(mut path: PathBuf) -> Result<Self, VisionGrepError> {
+        let path_error = |operation, path: &Path, source| VisionGrepError::IndexFile {
+            operation,
+            path: path.to_owned(),
+            source,
+        };
+        let mut metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(path_error("inspecting index path", &path, error)),
+        };
+        if metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.is_symlink())
+        {
+            path = path
+                .canonicalize()
+                .map_err(|error| path_error("resolving index symlink", &path, error))?;
+            metadata = Some(
+                fs::metadata(&path)
+                    .map_err(|error| path_error("inspecting index path", &path, error))?,
+            );
+        }
+        if metadata.as_ref().is_some_and(|metadata| metadata.is_dir()) {
+            return Err(VisionGrepError::IndexPathIsDirectory { path });
+        }
+        // Hard links have no single sibling lock path. Reserve .lock so reindex cannot replace one.
+        if metadata.is_some_and(|metadata| !metadata.is_file() || metadata.nlink() != 1)
+            || path.as_os_str().as_bytes().ends_with(b".lock")
+        {
+            return Err(path_error(
+                "validating index path",
+                &path,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "expected a regular database with one link and a name that does not end in .lock",
+                ),
+            ));
+        }
+        Ok(Self { path })
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -104,6 +141,37 @@ pub(super) enum ImageUpdate {
 pub(crate) struct ImageIndex {
     conn: Connection,
     path: PathBuf,
+    lock: Option<IndexLock>,
+}
+
+struct IndexLock {
+    _file: File,
+}
+
+impl IndexLock {
+    fn acquire(path: &Path, on_wait: impl FnOnce()) -> Result<Self, VisionGrepError> {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(".lock");
+        let path = PathBuf::from(name);
+        let file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .and_then(|file| {
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(fs::TryLockError::WouldBlock) => {
+                        on_wait();
+                        file.lock()?;
+                    }
+                    Err(fs::TryLockError::Error(source)) => return Err(source),
+                }
+                Ok(file)
+            })
+            .map_err(|source| VisionGrepError::IndexLock { path, source })?;
+        Ok(Self { _file: file })
+    }
 }
 
 pub(crate) struct ReconciliationPlan {
@@ -132,6 +200,7 @@ pub(crate) struct StagedImageIndex {
     index: ImageIndex,
     temporary: NamedTempFile,
     destination: PathBuf,
+    _lock: Option<IndexLock>,
 }
 
 impl ImageIndex {
@@ -143,9 +212,14 @@ impl ImageIndex {
         location: &IndexLocation,
         search_root: &Path,
         contract: EmbeddingContract,
+        on_wait: impl FnOnce(),
     ) -> Result<Self, VisionGrepError> {
+        let lock = IndexLock::acquire(location.path(), on_wait)?;
         let conn = Connection::open(location.path())?;
-        Self::from_connection(conn, location.path().to_owned(), search_root, contract)
+        let mut index =
+            Self::from_connection(conn, location.path().to_owned(), search_root, contract)?;
+        index.lock = Some(lock);
+        Ok(index)
     }
 
     #[cfg(test)]
@@ -363,7 +437,11 @@ impl ImageIndex {
         contract: EmbeddingContract,
     ) -> Result<Self, VisionGrepError> {
         conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
-        let mut index = Self { conn, path };
+        let mut index = Self {
+            conn,
+            path,
+            lock: None,
+        };
         index.init(search_root, contract)?;
         Ok(index)
     }
@@ -489,10 +567,16 @@ impl ImageIndex {
             })
     }
 
-    fn close(self) -> Result<(), VisionGrepError> {
-        self.conn
-            .close()
-            .map_err(|(_, source)| VisionGrepError::Index(source))
+    /// Closes the active database while retaining its lock through staging and installation.
+    pub(crate) fn stage(
+        self,
+        search_root: &Path,
+        contract: EmbeddingContract,
+    ) -> Result<StagedImageIndex, VisionGrepError> {
+        let Self { conn, path, lock } = self;
+        conn.close()
+            .map_err(|(_, source)| VisionGrepError::Index(source))?;
+        StagedImageIndex::create(path, lock, search_root, contract)
     }
 }
 
@@ -526,17 +610,17 @@ fn required_transaction_metadata(
 }
 
 impl StagedImageIndex {
-    pub(crate) fn create(
-        location: &IndexLocation,
+    fn create(
+        destination: PathBuf,
+        lock: Option<IndexLock>,
         search_root: &Path,
         contract: EmbeddingContract,
     ) -> Result<Self, VisionGrepError> {
         let parent =
-            location
-                .path()
+            destination
                 .parent()
                 .ok_or_else(|| VisionGrepError::IndexPathWithoutFileName {
-                    path: location.path().to_owned(),
+                    path: destination.clone(),
                 })?;
         let temporary = TempFileBuilder::new()
             .prefix(REINDEX_FILE_PREFIX)
@@ -553,7 +637,8 @@ impl StagedImageIndex {
         Ok(Self {
             index,
             temporary,
-            destination: location.path().to_owned(),
+            destination,
+            _lock: lock,
         })
     }
 
@@ -567,6 +652,7 @@ impl StagedImageIndex {
             index,
             temporary,
             destination,
+            _lock,
         } = self;
         let check = index
             .conn
@@ -580,7 +666,10 @@ impl StagedImageIndex {
 
         // Reading through the typed API also validates every persisted embedding blob.
         index.all_embeddings(Path::new(""))?;
-        index.close()?;
+        index
+            .conn
+            .close()
+            .map_err(|(_, source)| VisionGrepError::Index(source))?;
         temporary
             .as_file()
             .sync_all()
@@ -603,20 +692,77 @@ impl StagedImageIndex {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::mpsc;
+    use std::thread;
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn busy_index_notifies_before_waiting_and_opens_after_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let location = local_location(root);
+        let first = ImageIndex::open(&location, root, test_contract(), || {
+            panic!("an uncontended lock should not notify");
+        })
+        .unwrap();
+        let (notify, waiting) = mpsc::channel();
+        let (opened, finished) = mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                let index = ImageIndex::open(&location, root, test_contract(), move || {
+                    notify.send(()).unwrap();
+                })
+                .unwrap();
+                opened.send(index.image_count().unwrap()).unwrap();
+            });
+            let notified = waiting.recv_timeout(Duration::from_secs(5));
+            let before_release = finished.try_recv();
+            drop(first);
+            assert_eq!(notified, Ok(()));
+            assert_eq!(before_release, Err(mpsc::TryRecvError::Empty));
+            assert_eq!(finished.recv().unwrap(), 0);
+        });
+    }
+
+    #[test]
+    fn index_lock_survives_staging_and_serializes_another_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let staged = create_staged_index(root);
+        let (attempting, started) = mpsc::channel();
+        let (acquired, finished) = mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(move || {
+                attempting.send(()).unwrap();
+                let index = open_disk_index(root);
+                acquired.send(index.image_count().unwrap()).unwrap();
+            });
+            started.recv().unwrap();
+            let blocked = finished.recv_timeout(Duration::from_millis(50));
+            staged.install().unwrap();
+            assert_eq!(blocked, Err(mpsc::RecvTimeoutError::Timeout));
+            assert_eq!(finished.recv().unwrap(), 0);
+        });
+        assert_eq!(
+            fs::metadata(root.join(".visiongrep.db.lock"))
+                .unwrap()
+                .len(),
+            0
+        );
+    }
 
     fn local_location(root: &Path) -> IndexLocation {
         IndexLocation::resolve(root, None).unwrap()
     }
 
     fn open_disk_index(root: &Path) -> ImageIndex {
-        ImageIndex::open(&local_location(root), root, test_contract()).unwrap()
+        ImageIndex::open(&local_location(root), root, test_contract(), || {}).unwrap()
     }
 
     fn create_staged_index(root: &Path) -> StagedImageIndex {
-        StagedImageIndex::create(&local_location(root), root, test_contract()).unwrap()
+        open_disk_index(root).stage(root, test_contract()).unwrap()
     }
 
     fn embedding() -> NormalizedEmbedding {
@@ -719,7 +865,7 @@ mod tests {
     #[test]
     fn custom_index_rejects_an_existing_directory() {
         let root = tempfile::tempdir().unwrap();
-        let requested = root.path().join("index-directory");
+        let requested = root.path().canonicalize().unwrap().join("index-directory");
         fs::create_dir(&requested).unwrap();
         assert!(matches!(
             IndexLocation::resolve(root.path(), Some(&requested)),
@@ -727,6 +873,23 @@ mod tests {
         ));
         assert!(requested.is_dir());
         assert_eq!(fs::read_dir(&requested).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn index_locations_follow_symlinks_and_reject_lock_paths_and_hard_links() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let real = root.join("real.db");
+        let alias = root.join("alias.db");
+        fs::write(&real, []).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        assert_eq!(
+            IndexLocation::resolve(&root, Some(&alias)).unwrap().path(),
+            real
+        );
+        assert!(IndexLocation::resolve(&root, Some(&root.join("real.db.lock"))).is_err());
+        fs::hard_link(&real, root.join("hardlink.db")).unwrap();
+        assert!(IndexLocation::resolve(&root, Some(&real)).is_err());
     }
 
     #[test]
@@ -760,7 +923,7 @@ mod tests {
         let original = fs::read(location.path()).unwrap();
 
         assert!(matches!(
-            ImageIndex::open(&location, root.path(), test_contract()),
+            ImageIndex::open(&location, root.path(), test_contract(), || {}),
             Err(VisionGrepError::IndexVersionTooNew { found, supported })
                 if found == future_version && supported == EMBEDDING_CACHE_VERSION
         ));
@@ -922,7 +1085,8 @@ mod tests {
         let file = image_file(PathBuf::from("image.jpg"));
         let query_embedding = embedding();
         {
-            let mut index = ImageIndex::open(&location, directory.path(), test_contract()).unwrap();
+            let mut index =
+                ImageIndex::open(&location, directory.path(), test_contract(), || {}).unwrap();
             insert(&mut index, &file);
             index
                 .upsert_query_embedding("cached query", &query_embedding)
@@ -934,7 +1098,8 @@ mod tests {
             query: test_contract().query,
         };
         {
-            let mut index = ImageIndex::open(&location, directory.path(), image_changed).unwrap();
+            let mut index =
+                ImageIndex::open(&location, directory.path(), image_changed, || {}).unwrap();
             assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
             assert_eq!(
                 index.query_embedding("cached query").unwrap(),
@@ -947,7 +1112,7 @@ mod tests {
             image: image_changed.image,
             query: "changed-query-contract",
         };
-        let index = ImageIndex::open(&location, directory.path(), query_changed).unwrap();
+        let index = ImageIndex::open(&location, directory.path(), query_changed, || {}).unwrap();
         assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 1);
         assert!(index.query_embedding("cached query").unwrap().is_none());
     }
@@ -961,9 +1126,9 @@ mod tests {
         fs::create_dir(&second_root).unwrap();
         let index_path = directory.path().join("shared.db");
         let location = IndexLocation::resolve(&first_root, Some(&index_path)).unwrap();
-        drop(ImageIndex::open(&location, &first_root, test_contract()).unwrap());
+        drop(ImageIndex::open(&location, &first_root, test_contract(), || {}).unwrap());
 
-        let error = match ImageIndex::open(&location, &second_root, test_contract()) {
+        let error = match ImageIndex::open(&location, &second_root, test_contract(), || {}) {
             Ok(_) => panic!("wrong-root index reuse unexpectedly succeeded"),
             Err(error) => error,
         };
@@ -978,7 +1143,7 @@ mod tests {
         let index_path = index_directory.path().join("external.db");
         let location = IndexLocation::resolve(root.path(), Some(&index_path)).unwrap();
 
-        drop(ImageIndex::open(&location, root.path(), test_contract()).unwrap());
+        drop(ImageIndex::open(&location, root.path(), test_contract(), || {}).unwrap());
 
         assert!(index_path.exists());
         assert!(!root.path().join(INDEX_FILE_NAME).exists());
@@ -1001,7 +1166,10 @@ mod tests {
         let location =
             IndexLocation::resolve(root.path(), Some(&index_directory.path().join("index.db")))
                 .unwrap();
-        let staged = StagedImageIndex::create(&location, root.path(), test_contract()).unwrap();
+        let staged = ImageIndex::open(&location, root.path(), test_contract(), || {})
+            .unwrap()
+            .stage(root.path(), test_contract())
+            .unwrap();
         let expected_parent = index_directory.path().canonicalize().unwrap();
 
         assert_eq!(
@@ -1084,7 +1252,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let index = ImageIndex::open(&location, directory.path(), test_contract()).unwrap();
+        let index = ImageIndex::open(&location, directory.path(), test_contract(), || {}).unwrap();
 
         assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 1);
         assert_eq!(
@@ -1108,7 +1276,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let error = match ImageIndex::open(&location, directory.path(), test_contract()) {
+        let error = match ImageIndex::open(&location, directory.path(), test_contract(), || {}) {
             Ok(_) => panic!("index without root metadata unexpectedly opened"),
             Err(error) => error,
         };
@@ -1206,17 +1374,6 @@ mod tests {
             })
             .collect();
         staged.index_mut().apply_updates(first_batch).unwrap();
-
-        // A reader opening the active path during the rebuild still sees the complete old index.
-        let concurrent_reader = open_disk_index(directory.path());
-        assert_eq!(
-            concurrent_reader
-                .all_embeddings(Path::new(""))
-                .unwrap()
-                .len(),
-            1
-        );
-        drop(concurrent_reader);
 
         staged
             .index_mut()

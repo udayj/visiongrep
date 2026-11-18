@@ -58,6 +58,7 @@ impl Fixture {
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_visiongrep"));
         command
+            .arg("--no-server")
             .current_dir(self.scratch.path())
             .env("XDG_CACHE_HOME", &self.cache)
             .env("NO_COLOR", "1");

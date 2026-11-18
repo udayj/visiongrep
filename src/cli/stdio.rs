@@ -66,7 +66,7 @@ enum Response<'a> {
 impl Request {
     fn execute(
         &mut self,
-        service: &mut SearchService,
+        service: &SearchService,
         terminal: &mut Terminal,
     ) -> Result<Vec<SearchResult>, RequestError> {
         if self.top == 0 {
@@ -99,16 +99,12 @@ impl Request {
 }
 
 pub(crate) fn serve(path: &Path, index_path: Option<&Path>) -> Result<(), VisionGrepError> {
-    let mut service = SearchService::open(path, index_path)?;
-    serve_requests(
-        &mut service,
-        &mut io::stdin().lock(),
-        &mut io::stdout().lock(),
-    )
+    let service = SearchService::open(path, index_path)?;
+    serve_requests(&service, &mut io::stdin().lock(), &mut io::stdout().lock())
 }
 
 fn serve_requests(
-    service: &mut SearchService,
+    service: &SearchService,
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<(), VisionGrepError> {
@@ -171,10 +167,10 @@ mod tests {
     #[test]
     fn invalid_requests_do_not_end_the_stream() {
         let directory = tempfile::tempdir().unwrap();
-        let mut service = SearchService::open(directory.path(), None).unwrap();
+        let service = SearchService::open(directory.path(), None).unwrap();
         let input = b"not json\n{\"id\":1,\"query\":\"dog\",\"image\":\"dog.png\"}\n{\"id\":2,\"query\":\"dog\",\"top\":0}\n{\"id\":3,\"query\":\"dog\",\"threshold\":2}\n{\"id\":\"ok\",\"query\":\"dog\"}";
         let mut output = Vec::new();
-        serve_requests(&mut service, &mut &input[..], &mut output).unwrap();
+        serve_requests(&service, &mut &input[..], &mut output).unwrap();
         let responses: Vec<serde_json::Value> = output
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
@@ -192,11 +188,11 @@ mod tests {
     #[test]
     fn oversized_request_is_a_fatal_error() {
         let directory = tempfile::tempdir().unwrap();
-        let mut service = SearchService::open(directory.path(), None).unwrap();
+        let service = SearchService::open(directory.path(), None).unwrap();
         let input = vec![b' '; MAX_REQUEST_BYTES as usize + 1];
         let mut output = Vec::new();
         assert!(matches!(
-            serve_requests(&mut service, &mut &input[..], &mut output),
+            serve_requests(&service, &mut &input[..], &mut output),
             Err(VisionGrepError::StdioRequestTooLarge { .. })
         ));
         assert!(output.is_empty());
