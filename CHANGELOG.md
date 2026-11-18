@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Index the first frame of GIFs, the first page of TIFFs, and embedded JPEG previews in supported
+  camera RAW files. Add HEIC and HEIF support on macOS.
 - Start a shared socket server automatically for searches, indexing, and reindexing. It loads
   models on demand, serves multiple folders concurrently, and exits after 10 minutes idle.
   Use `server stop` to shut it down or `--no-server` for an in-process run.

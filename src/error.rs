@@ -28,6 +28,51 @@ pub(crate) enum ImagePreparationError {
         width: u32,
         height: u32,
     },
+
+    #[error("failed to read RAW image {path}: {source}")]
+    RawRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to locate the JPEG preview in RAW image {path}: {source}")]
+    RawContainer {
+        path: PathBuf,
+        #[source]
+        source: RawContainerError,
+    },
+
+    #[error(
+        "RAW image {path} has a {width}x{height} preview; the short edge must be at least 256 pixels"
+    )]
+    RawPreviewTooSmall {
+        path: PathBuf,
+        width: u32,
+        height: u32,
+    },
+
+    #[cfg(target_os = "macos")]
+    #[error("ImageIO could not decode HEIC image {path}")]
+    PlatformDecode { path: PathBuf },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RawContainerError {
+    #[error("unrecognized RAW container header")]
+    UnrecognizedHeader,
+    #[error("truncated RAW container")]
+    Truncated,
+    #[error("RAW container offset or length is out of bounds")]
+    OffsetOutOfBounds,
+    #[error("too many TIFF directories or directory entries")]
+    TooManyIfds,
+    #[error("TIFF directory offsets form a cycle")]
+    IfdCycle,
+    #[error("too many ISO-BMFF boxes")]
+    TooManyBoxes,
+    #[error("no usable JPEG preview")]
+    NoPreview,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -135,6 +180,9 @@ pub(crate) enum VisionGrepError {
         width: u32,
         height: u32,
     },
+
+    #[error(transparent)]
+    ImagePreparation(ImagePreparationError),
 
     #[error("an image preprocessing worker panicked")]
     ImagePreprocessingWorkerPanicked,
@@ -356,6 +404,11 @@ impl From<ImagePreparationError> for VisionGrepError {
                 width,
                 height,
             },
+            ImagePreparationError::RawRead { .. }
+            | ImagePreparationError::RawContainer { .. }
+            | ImagePreparationError::RawPreviewTooSmall { .. } => Self::ImagePreparation(error),
+            #[cfg(target_os = "macos")]
+            ImagePreparationError::PlatformDecode { .. } => Self::ImagePreparation(error),
         }
     }
 }
