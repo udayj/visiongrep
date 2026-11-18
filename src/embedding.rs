@@ -1,9 +1,10 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use image::{DynamicImage, ImageDecoder, ImageReader, RgbImage};
+use image::{DynamicImage, RgbImage};
 use ndarray::Array4;
 
+use crate::decode::load_image;
 use crate::error::{EmbeddingError, ImagePreparationError, VisionGrepError};
 use crate::model::{TextSession, VisionSession};
 use crate::pillow_resize;
@@ -14,11 +15,6 @@ pub(crate) const IMAGE_SIZE_USIZE: usize = 256;
 pub(crate) const EMBEDDING_DIM: usize = 512;
 const EMBEDDING_BYTES: usize = EMBEDDING_DIM * std::mem::size_of::<f32>();
 const NORMALIZED_NORM_TOLERANCE: f32 = 1e-3;
-const MAX_IMAGE_PIXELS: u64 = 100_000_000;
-const MAX_IMAGE_WORKING_BYTES: u64 = 512 * 1024 * 1024;
-const RGB_CHANNELS: u64 = 3;
-const PREPROCESSED_RGB_BYTES: u64 = 256 * 256 * RGB_CHANNELS;
-const INPUT_TENSOR_BYTES: u64 = PREPROCESSED_RGB_BYTES * 4;
 const CLIP_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
 const CLIP_STD: [f32; 3] = [0.26862954, 0.261_302_6, 0.275_777_1];
 
@@ -213,64 +209,6 @@ fn l2_norm(values: &[f32]) -> f32 {
     values.iter().map(|value| value * value).sum::<f32>().sqrt()
 }
 
-/// Decodes an image only after checking its declared resource requirements and applies orientation.
-///
-/// Dimensions and decoded byte count are inspected before pixel allocation to limit unconstrained
-/// decompression and pathological inputs. EXIF orientation is applied before cropping so the crop follows
-/// the image's intended visual orientation.
-fn load_image(path: &Path) -> Result<DynamicImage, ImagePreparationError> {
-    let reader = ImageReader::open(path)
-        .map_err(|source| ImagePreparationError::Decode {
-            path: path.to_owned(),
-            source: source.into(),
-        })?
-        .with_guessed_format()
-        .map_err(|source| ImagePreparationError::Decode {
-            path: path.to_owned(),
-            source: source.into(),
-        })?;
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|source| ImagePreparationError::Decode {
-            path: path.to_owned(),
-            source,
-        })?;
-    let (width, height) = decoder.dimensions();
-    if width == 0 || height == 0 {
-        return Err(ImagePreparationError::InvalidDimensions {
-            path: path.to_owned(),
-            width,
-            height,
-        });
-    }
-    let pixel_count = u64::from(width).saturating_mul(u64::from(height));
-    let decoded_bytes = decoder.total_bytes();
-    let estimated_working_bytes = estimate_working_bytes(width, height, decoded_bytes);
-    if pixel_count > MAX_IMAGE_PIXELS || estimated_working_bytes > MAX_IMAGE_WORKING_BYTES {
-        return Err(ImagePreparationError::TooLarge {
-            path: path.to_owned(),
-            width,
-            height,
-            decoded_bytes,
-            estimated_working_bytes,
-        });
-    }
-
-    let orientation = decoder
-        .orientation()
-        .map_err(|source| ImagePreparationError::Decode {
-            path: path.to_owned(),
-            source,
-        })?;
-    let mut image =
-        DynamicImage::from_decoder(decoder).map_err(|source| ImagePreparationError::Decode {
-            path: path.to_owned(),
-            source,
-        })?;
-    image.apply_orientation(orientation);
-    Ok(image)
-}
-
 /// Produces the channel-first, normalized `[3, 256, 256]` values expected by the vision model.
 fn preprocess_pixels(image: DynamicImage) -> Vec<f32> {
     let resized = resize_and_center_crop(image);
@@ -300,7 +238,7 @@ fn resize_and_center_crop(image: DynamicImage) -> RgbImage {
     image::imageops::crop_imm(&resized, left, top, IMAGE_SIZE, IMAGE_SIZE).to_image()
 }
 
-fn resized_dimensions(width: u32, height: u32) -> (u32, u32) {
+pub(crate) fn resized_dimensions(width: u32, height: u32) -> (u32, u32) {
     if width < height {
         (
             IMAGE_SIZE,
@@ -322,21 +260,6 @@ fn round_half_to_even(floor: u32, numerator: u32) -> u32 {
     } else {
         floor + 1
     }
-}
-
-fn estimate_working_bytes(width: u32, height: u32, decoded_bytes: u64) -> u64 {
-    let pixel_count = u64::from(width).saturating_mul(u64::from(height));
-    let (resized_width, resized_height) = resized_dimensions(width, height);
-    let resized_bytes = u64::from(resized_width)
-        .saturating_mul(u64::from(resized_height))
-        .saturating_mul(RGB_CHANNELS);
-    // Orientation can temporarily duplicate the decoded image, while conversion may allocate RGB.
-    decoded_bytes
-        .saturating_mul(2)
-        .saturating_add(pixel_count.saturating_mul(RGB_CHANNELS))
-        .saturating_add(resized_bytes)
-        .saturating_add(PREPROCESSED_RGB_BYTES)
-        .saturating_add(INPUT_TENSOR_BYTES)
 }
 
 #[cfg(test)]
@@ -504,11 +427,26 @@ mod tests {
     }
 
     #[test]
-    fn working_memory_estimate_includes_secondary_buffers() {
-        let pixel_count = 100_000_000;
-        let decoded_bytes = pixel_count * RGB_CHANNELS;
+    fn tiff_and_png_produce_the_same_model_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let image = RgbImage::from_fn(320, 256, |x, y| {
+            Rgb([
+                if x < 160 { 255 } else { 0 },
+                if y < 128 { 255 } else { 0 },
+                42,
+            ])
+        });
+        let paths = [
+            directory.path().join("photo.tiff"),
+            directory.path().join("photo.png"),
+        ];
+        for path in &paths {
+            image.save(path).unwrap();
+        }
 
-        assert!(estimate_working_bytes(10_000, 10_000, decoded_bytes) > MAX_IMAGE_WORKING_BYTES);
+        let [tiff, png] = paths.map(|path| prepare_image(&path, false).unwrap());
+        // Identical model input guarantees identical embeddings, so no inference is needed.
+        assert_eq!(tiff.values, png.values);
     }
 
     #[test]

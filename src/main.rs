@@ -1,7 +1,8 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod application;
 mod cli;
+mod decode;
 mod embedding;
 mod error;
 mod index;

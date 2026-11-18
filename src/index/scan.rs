@@ -2,6 +2,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use crate::decode::ImageKind;
 use crate::error::VisionGrepError;
 
 #[derive(Debug)]
@@ -73,7 +74,7 @@ pub(crate) fn discover_images(root: &SearchRoot) -> Result<Vec<ImageFile>, Visio
             }
         };
 
-        if !entry.file_type().is_file() || !is_supported_image(entry.path()) {
+        if !entry.file_type().is_file() || ImageKind::from_path(entry.path()).is_none() {
             continue;
         }
 
@@ -126,18 +127,6 @@ pub(crate) fn discover_images(root: &SearchRoot) -> Result<Vec<ImageFile>, Visio
             .cmp(right.relative_path.as_os_str().as_bytes())
     });
     Ok(files)
-}
-
-fn is_supported_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "webp" | "bmp"
-            )
-        })
-        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -238,11 +227,12 @@ mod tests {
     #[test]
     fn discovery_accepts_supported_extensions_case_insensitively() {
         let directory = tempfile::tempdir().unwrap();
-        let supported = ["a.jpg", "b.JPEG", "c.PnG", "d.WeBp", "e.BMP"];
-        for name in
-            supported
-                .into_iter()
-                .chain(["notes.txt", "image.gif", "png", ".png", "a.png.bak"])
+        let supported = [
+            "a.jpg", "b.JPEG", "c.PnG", "d.WeBp", "e.BMP", "f.GIF", "g.tif", "h.TIFF", "i.CR2",
+        ];
+        for name in supported
+            .into_iter()
+            .chain(["notes.txt", "png", ".png", "a.png.bak"])
         {
             fs::write(directory.path().join(name), []).unwrap();
         }

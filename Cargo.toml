@@ -25,6 +25,11 @@ thiserror = "2"
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 walkdir = "2.5"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["CFDictionary", "CFNumber", "CFString", "CFURL", "std"] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
+objc2-image-io = { version = "=0.3.2", default-features = false, features = ["CGImageProperties", "CGImageSource", "objc2-core-graphics"] }
+
 [profile.release]
 codegen-units = 1
 lto = true

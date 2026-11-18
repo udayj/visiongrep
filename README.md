@@ -2,7 +2,11 @@
 
 Search local images with a natural language description or a reference image. VisionGrep is a
 Rust CLI that runs CLIP inference locally and caches embeddings in SQLite for repeated searches.
-It recursively searches JPEG, PNG, WebP, and BMP files without following symbolic links.
+It recursively searches JPEG, PNG, WebP, BMP, GIF, TIFF, and supported camera RAW files without
+following symbolic links. On macOS it also searches HEIC and HEIF files (`.heic`, `.heif`, `.hif`).
+VisionGrep indexes the first frame of a GIF and the first page of a TIFF. For RAW files
+(`.cr2`, `.nef`, `.arw`, `.dng`, `.rw2`, `.pef`, `.raf`, `.cr3`), it uses the embedded JPEG
+preview and skips files without a usable preview at least 256 pixels on its short edge.
 
 It is built to be called by scripts and AI coding agents as well as people: results go to stdout
 in stable text, JSON or NUL-separated formats, diagnostics go to stderr, and exit codes separate
