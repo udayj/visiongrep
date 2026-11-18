@@ -47,11 +47,15 @@ pub(crate) enum EmbeddingError {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VisionGrepError {
-    #[error("a server is already running for {path}")]
-    SocketServerRunning { path: PathBuf },
+    #[error("the {model} model session lock was poisoned")]
+    ModelSessionPoisoned { model: &'static str },
 
-    #[error("stop the socket server before --reindex")]
-    ReindexWhileSocketServerRunning,
+    #[error("failed to create or lock index lock {path}: {source}")]
+    IndexLock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("{message}")]
     SocketRemote { message: String },

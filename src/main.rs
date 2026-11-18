@@ -10,10 +10,10 @@ mod pillow_resize;
 mod ranking;
 mod timing;
 
-use clap::Parser;
+use clap::{CommandFactory, error::ErrorKind};
 
 use crate::application::search;
-use crate::cli::{Cli, ServeMode, Subcommands, Terminal};
+use crate::cli::{Cli, ServeMode, ServerAction, Subcommands, Terminal};
 use crate::error::VisionGrepError;
 use crate::timing::{Phase, TimingRecorder};
 
@@ -30,7 +30,8 @@ fn main() {
 }
 
 fn run() -> Result<ExitStatus, VisionGrepError> {
-    let mut cli = Cli::parse();
+    let mut cli = Cli::parse_cli();
+    let no_server = cli.no_server;
     match cli.subcommand.take() {
         Some(Subcommands::Serve {
             path,
@@ -40,8 +41,18 @@ fn run() -> Result<ExitStatus, VisionGrepError> {
             return preserve_status_on_broken_pipe(
                 ExitStatus::Found,
                 match mode.mode() {
-                    ServeMode::Stdio => crate::cli::serve(&path, index_path.as_deref()),
-                    ServeMode::Socket => crate::cli::serve_socket(&path, index_path.as_deref()),
+                    ServeMode::Stdio => {
+                        let path = path.as_deref().unwrap_or_else(|| {
+                            Cli::command()
+                                .error(
+                                    ErrorKind::MissingRequiredArgument,
+                                    "provide a directory for --stdio",
+                                )
+                                .exit()
+                        });
+                        crate::cli::serve(path, index_path.as_deref())
+                    }
+                    ServeMode::Socket => crate::cli::serve_socket(),
                 },
             );
         }
@@ -50,21 +61,25 @@ fn run() -> Result<ExitStatus, VisionGrepError> {
             index_path,
             quiet,
         }) => {
-            crate::cli::index(&path, index_path.as_deref(), quiet)?;
+            crate::cli::index(&path, index_path.as_deref(), quiet, no_server)?;
+            return Ok(ExitStatus::Found);
+        }
+        Some(Subcommands::Server {
+            action: ServerAction::Stop,
+        }) => {
+            crate::cli::stop_socket()?;
             return Ok(ExitStatus::Found);
         }
         None => {}
     }
     let command = cli.into_command().unwrap_or_else(|error| error.exit());
-    if command.request.is_reindex() && crate::cli::socket_server_running(&command.request) {
-        return Err(VisionGrepError::ReindexWhileSocketServerRunning);
-    }
     let mut timing = TimingRecorder::new(
         command.timing_destination.is_some(),
         crate::model::timing_metadata(),
     );
     let mut terminal = Terminal::new(command.output_format, command.quiet);
-    let use_socket = command.request.can_use_server() && command.timing_destination.is_none();
+    let use_socket =
+        !no_server && command.request.can_use_server() && command.timing_destination.is_none();
     let socket_results = if use_socket {
         crate::cli::try_socket_search(&command.request, &mut terminal)?
     } else {

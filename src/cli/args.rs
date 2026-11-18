@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
@@ -19,6 +20,13 @@ use crate::timing::TimingDestination;
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) subcommand: Option<Subcommands>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Run in-process without using the shared server"
+    )]
+    pub(crate) no_server: bool,
 
     #[arg(value_parser = parse_query, required_unless_present = "image", conflicts_with = "image", help = "Natural language description of what to find")]
     query: Option<String>,
@@ -101,14 +109,20 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Subcommands {
-    /// Serve sequential JSONL search requests, refreshing the index before each search
+    /// Serve shared socket requests or a directory's JSONL searches
     Serve {
         #[command(flatten)]
         mode: ServeModeArgs,
-        #[arg(long, value_name = "PATH", help = "Store the index at PATH")]
+        #[arg(
+            long,
+            value_name = "PATH",
+            requires = "stdio",
+            help = "Store the index at PATH"
+        )]
         index_path: Option<PathBuf>,
         /// Directory to search recursively
-        path: PathBuf,
+        #[arg(required_if_eq("stdio", "true"), conflicts_with = "socket")]
+        path: Option<PathBuf>,
     },
     /// Index a directory and prepare both models without searching
     Index {
@@ -119,6 +133,17 @@ pub(crate) enum Subcommands {
         /// Directory to index recursively
         path: PathBuf,
     },
+    /// Manage the shared socket server
+    Server {
+        #[command(subcommand)]
+        action: ServerAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ServerAction {
+    /// Ask the shared server to finish active requests and shut down
+    Stop,
 }
 
 #[derive(Debug, Args)]
@@ -126,7 +151,11 @@ pub(crate) enum Subcommands {
 pub(crate) struct ServeModeArgs {
     #[arg(long, help = "Read JSONL from stdin and write JSONL to stdout")]
     stdio: bool,
-    #[arg(long, help = "Listen for local CLI searches on a Unix socket")]
+    #[arg(
+        long,
+        conflicts_with = "no_server",
+        help = "Listen for local CLI requests on a Unix socket"
+    )]
     socket: bool,
 }
 
@@ -153,6 +182,37 @@ pub(crate) struct Command {
 }
 
 impl Cli {
+    pub(crate) fn parse_cli() -> Self {
+        Self::parse_args(std::env::args_os().collect()).unwrap_or_else(|error| error.exit())
+    }
+
+    fn parse_args(mut args: Vec<OsString>) -> Result<Self, clap::Error> {
+        // Clap otherwise treats every leading option as the start of a search.
+        if args.get(1).is_some_and(|arg| arg == "--no-server")
+            && args
+                .get(2)
+                .and_then(|arg| arg.to_str())
+                .is_some_and(|name| Self::command().find_subcommand(name).is_some())
+        {
+            args.swap(1, 2);
+        }
+        let cli = Self::try_parse_from(args)?;
+        if cli.no_server
+            && matches!(
+                cli.subcommand,
+                Some(Subcommands::Server {
+                    action: ServerAction::Stop
+                })
+            )
+        {
+            return Err(Self::command().error(
+                ErrorKind::ArgumentConflict,
+                "--no-server cannot be used with server stop",
+            ));
+        }
+        Ok(cli)
+    }
+
     pub(crate) fn into_command(self) -> Result<Command, clap::Error> {
         let path = self.path.ok_or_else(|| {
             Self::command().error(
@@ -317,6 +377,25 @@ mod tests {
         let cli = Cli::try_parse_from(["visiongrep", "--top", "5", "index", "photos"]).unwrap();
         assert_eq!(cli.query.as_deref(), Some("index"));
         assert!(cli.subcommand.is_none());
+    }
+
+    #[test]
+    fn global_no_server_can_precede_or_follow_a_subcommand() {
+        for args in [
+            ["visiongrep", "--no-server", "index", "photos"],
+            ["visiongrep", "index", "photos", "--no-server"],
+        ] {
+            let cli = Cli::parse_args(args.map(OsString::from).to_vec()).unwrap();
+            assert!(cli.no_server);
+            assert!(cli.subcommand.is_some());
+        }
+        for args in [
+            ["visiongrep", "--no-server", "server", "stop"],
+            ["visiongrep", "server", "stop", "--no-server"],
+        ] {
+            let error = Cli::parse_args(args.map(OsString::from).to_vec()).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]

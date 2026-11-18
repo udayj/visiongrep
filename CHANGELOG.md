@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Start a shared socket server automatically for searches, indexing, and reindexing. It loads
+  models on demand, serves multiple folders concurrently, and exits after 10 minutes idle.
+  Use `server stop` to shut it down or `--no-server` for an in-process run.
+- Lock each SQLite index across requests and processes, including during database replacement
+  by `--reindex`.
+- Requests on an index being indexed or reindexed wait for that job to finish and print a
+  waiting message to stderr unless `--quiet` is set.
+
 ## 0.4.2
 
 - Add `visiongrep index DIR`, which downloads missing models, updates the index and prepares both

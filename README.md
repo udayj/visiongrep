@@ -91,8 +91,8 @@ it with a long timeout. After that, a new query takes well under a second and a 
 takes a few milliseconds. If an agent's command is cut off while indexing, running it again
 continues from the saved progress.
 
-For many queries against one folder, start `visiongrep serve --socket DIR` in the background.
-Ordinary searches then use the loaded models automatically, with no change to the command.
+Ordinary searches and indexing reuse a server that starts automatically. The same server can
+search other folders while an indexing job is running.
 
 Output for agents:
 
@@ -103,8 +103,8 @@ Output for agents:
   `--threshold -1` to always get the top results.
 - Progress, warnings and errors go to stderr only; `--quiet` suppresses progress.
 
-Concurrent searches can share an index. Do not run `--reindex` while other searches use the same
-index (see the known limitation below).
+Requests using the same index wait for one another, including during `--reindex`. A message
+on stderr reports the wait unless `--quiet` is set.
 
 A snippet to adapt for `AGENTS.md` or `CLAUDE.md`:
 
@@ -118,22 +118,17 @@ Scores are raw cosine similarities (around 0.25–0.35 for good matches), not pr
 Never pass `--reindex`.
 ```
 
-## Persistent socket server
+## Automatic shared server
 
-Start an opt-in server for a search directory to reuse its loaded models across ordinary CLI
-searches:
+Ordinary searches, `index`, and `--reindex` start a background server on demand. One server per
+user, cache directory, and VisionGrep binary shares its loaded models across folders. The server
+uses about 400–600 MiB with both models loaded and exits after 10 minutes without requests.
+Run `visiongrep server stop` to request shutdown. Active requests finish before the server exits.
+To run it in the foreground, use `visiongrep serve --socket`.
 
-```sh
-visiongrep serve --socket ./photos &
-visiongrep "a dog on a beach" ./photos
-```
-
-The server runs in the foreground until stopped. Searches use it automatically when the search
-directory and resolved index path match; otherwise they run as normal one-shot searches. Pass the
-same `--index-path` to the server and searches when using a custom index. The server loads models
-as needed and keeps them in memory (about 400–600 MiB with both models loaded). `--no-cache`,
-`--reindex`, `--verify-models`, and `--timing` always run one-shot searches. `--reindex` refuses to
-run while a socket server is listening for the same root and index; stop the server first.
+Use `--no-server` to run a search or `index` in-process. Searches with `--no-cache`,
+`--verify-models`, or `--timing` always run in-process. A search or indexing command also runs
+in-process if it cannot reach the server.
 
 ## Persistent stdio searches
 
@@ -159,19 +154,17 @@ Provide exactly one non-blank `query` or non-empty `image` path. `top` defaults 
 be positive; `threshold` defaults to 0.25 and accepts -1 through 1. The optional `id` is a
 string or unsigned 64-bit integer and is echoed back (omitted/null IDs return null). Unknown
 fields are rejected. Paths follow the usual CLI rules: relative paths use the process's working
-directory, and JSON requires UTF-8 paths. To search for the literal word `serve` or `index` in
-one-shot mode, place a search option first: `visiongrep --top 5 serve ./photos`.
+directory, and JSON requires UTF-8 paths. Place a search option before a query that is also a
+subcommand name, as in `visiongrep --top 5 serve ./photos`.
 
 Before each search, the service scans for additions, modifications and deletions and updates the
-index. SQLite stays open; text and vision models load only when needed and remain resident until
-exit. Image vectors are read from SQLite for each request. Keeping both models resident uses more
-memory than one-shot mode. The search directory is resolved at startup.
+index. Each request opens SQLite and reads the image vectors. Text and vision models load as
+needed and remain resident until exit. The search directory is resolved at startup.
 
 Request failures return `{"id":1,"error":"..."}` and the service continues. Malformed JSON or
 schema errors return a null ID. Progress and warnings go to stderr. Close stdin to shut down;
 EOF and a closed output pipe exit with code 0, even if individual requests failed or had no matches.
 Startup/I/O failures and request lines exceeding 1 MiB (including the newline) exit with code 2.
-Stop the service before replacing or rebuilding its index with `--reindex`.
 
 ## Index cache and reindexing
 
@@ -180,12 +173,11 @@ unchanged image embeddings; modification time and file size determine which imag
 Use `--index-path PATH` to choose another location, `--no-cache` to bypass the index, or `--reindex`
 to rebuild it before returning search results. A custom index belongs to one search root.
 
-**Known limitation: running `--reindex` concurrently with a cached search or another `--reindex`
-using the same index can corrupt the SQLite database.** Reindexing replaces the database file
-without coordinating other processes that may still have it open. Atomic file replacement does
-not make concurrent database access safe. Wait for all users of that index to finish before
-starting `--reindex`, and let it finish before accessing the index again. This also applies to
-indexes selected with `--index-path`; concurrency protection is not implemented yet.
+VisionGrep serializes access to each index using an exclusive lock on its sibling `.lock` file.
+This covers the full rebuild and database replacement during `--reindex`, including when other
+VisionGrep processes use the same index. The OS releases the lock when the request ends or the
+process exits. Leave the `.lock` file in place. Custom index paths may use symlinks. Hard-linked
+databases and names ending in `.lock` are rejected.
 
 ## Development
 

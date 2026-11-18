@@ -5,7 +5,7 @@ use rayon::prelude::*;
 
 use crate::embedding::{NormalizedEmbedding, PreparedImage, embed_prepared_images, prepare_image};
 use crate::error::{ImagePreparationError, VisionGrepError};
-use crate::model::VisionSession;
+use crate::model::{ArtifactEvent, Models};
 use crate::timing::{Phase, TimingRecorder};
 
 use super::scan::{ImageFile, SearchRoot};
@@ -20,6 +20,7 @@ pub(crate) enum IngestEvent {
     ImageProcessed,
     ImageSkipped(VisionGrepError),
     Finished,
+    Artifact(ArtifactEvent),
 }
 
 /// Embeds and persists changed images, treating unreadable and oversized files as recoverable.
@@ -31,11 +32,11 @@ pub(crate) fn ingest_into_index(
     root: &SearchRoot,
     index: &mut ImageIndex,
     files: &[ImageFile],
-    session: &mut VisionSession,
+    models: &Models,
     on_event: &mut impl FnMut(IngestEvent),
     timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
-    report_started(files.len(), on_event)?;
+    start_ingestion(files.len(), models, on_event, timing)?;
     let result = (|| {
         if files.is_empty() {
             return Ok(());
@@ -45,7 +46,7 @@ pub(crate) fn ingest_into_index(
             let mut updates = Vec::with_capacity(files.len());
             for files in files.chunks(VISION_BATCH_SIZE) {
                 let embeddings = embed_image_batch_with_skip_policy(
-                    root, files, session, &pool, on_event, timing,
+                    root, files, models, &pool, on_event, timing,
                 )?;
                 for (file, embedding) in files.iter().zip(embeddings) {
                     let update = match embedding {
@@ -75,11 +76,11 @@ pub(crate) fn ingest_into_index(
 pub(crate) fn embed_images(
     root: &SearchRoot,
     files: &[ImageFile],
-    session: &mut VisionSession,
+    models: &Models,
     on_event: &mut impl FnMut(IngestEvent),
     timing: &mut TimingRecorder,
 ) -> Result<Vec<ImageRecord>, VisionGrepError> {
-    report_started(files.len(), on_event)?;
+    start_ingestion(files.len(), models, on_event, timing)?;
     let result = (|| {
         if files.is_empty() {
             return Ok(Vec::new());
@@ -88,7 +89,7 @@ pub(crate) fn embed_images(
         let mut records = Vec::with_capacity(files.len());
         for files in files.chunks(VISION_BATCH_SIZE) {
             let embeddings =
-                embed_image_batch_with_skip_policy(root, files, session, &pool, on_event, timing)?;
+                embed_image_batch_with_skip_policy(root, files, models, &pool, on_event, timing)?;
             for (file, embedding) in files.iter().zip(embeddings) {
                 if let Some(embedding) = embedding {
                     records.push(ImageRecord {
@@ -105,10 +106,19 @@ pub(crate) fn embed_images(
     result
 }
 
-fn report_started(
+fn start_ingestion(
     file_count: usize,
+    models: &Models,
     on_event: &mut impl FnMut(IngestEvent),
+    timing: &mut TimingRecorder,
 ) -> Result<(), VisionGrepError> {
+    if file_count != 0 {
+        models.with_vision(
+            &mut |event| on_event(IngestEvent::Artifact(event)),
+            timing,
+            |_, _| Ok(()),
+        )?;
+    }
     let total = u64::try_from(file_count).map_err(|source| VisionGrepError::NumericConversion {
         context: "reporting image ingestion progress",
         source,
@@ -120,22 +130,29 @@ fn report_started(
 fn embed_image_batch_with_skip_policy(
     root: &SearchRoot,
     files: &[ImageFile],
-    session: &mut VisionSession,
+    models: &Models,
     pool: &ThreadPool,
     on_event: &mut impl FnMut(IngestEvent),
     timing: &mut TimingRecorder,
 ) -> Result<Vec<Option<NormalizedEmbedding>>, VisionGrepError> {
     let prepared = prepare_images_parallel(root, files, timing.is_enabled(), pool)?;
-    infer_prepared_batch(files.len(), prepared, on_event, |valid_images| {
-        embed_prepared_images(valid_images, session, timing)
+    infer_prepared_batch(files.len(), prepared, on_event, |valid_images, on_event| {
+        if valid_images.is_empty() {
+            return Ok(Vec::new());
+        }
+        models.with_vision(
+            &mut |event| on_event(IngestEvent::Artifact(event)),
+            timing,
+            |session, timing| embed_prepared_images(valid_images, session, timing),
+        )
     })
 }
 
-fn infer_prepared_batch(
+fn infer_prepared_batch<F: FnMut(IngestEvent)>(
     file_count: usize,
     prepared: Vec<Result<PreparedImage, ImagePreparationError>>,
-    on_event: &mut impl FnMut(IngestEvent),
-    infer: impl FnOnce(Vec<PreparedImage>) -> Result<Vec<NormalizedEmbedding>, VisionGrepError>,
+    on_event: &mut F,
+    infer: impl FnOnce(Vec<PreparedImage>, &mut F) -> Result<Vec<NormalizedEmbedding>, VisionGrepError>,
 ) -> Result<Vec<Option<NormalizedEmbedding>>, VisionGrepError> {
     let mut valid_indices = Vec::with_capacity(file_count);
     let mut valid_images = Vec::with_capacity(file_count);
@@ -150,7 +167,7 @@ fn infer_prepared_batch(
     }
 
     let expected = valid_indices.len();
-    let embeddings = infer(valid_images)?;
+    let embeddings = infer(valid_images, on_event)?;
     if embeddings.len() != expected {
         return Err(VisionGrepError::ImageBatchResultCount {
             expected,
@@ -280,7 +297,7 @@ mod tests {
         let files = discover_images(&root).unwrap();
         let prepared = prepare_images_with_workers(&root, &files, false, 2).unwrap();
 
-        let error = infer_prepared_batch(files.len(), prepared, &mut |_| {}, |_| {
+        let error = infer_prepared_batch(files.len(), prepared, &mut |_| {}, |_, _| {
             Err(VisionGrepError::Io(std::io::Error::other(
                 "injected inference failure",
             )))
@@ -299,7 +316,7 @@ mod tests {
         let files = discover_images(&root).unwrap();
         let prepared = prepare_images_with_workers(&root, &files, false, 2).unwrap();
 
-        let error = infer_prepared_batch(files.len(), prepared, &mut |_| {}, |_| Ok(Vec::new()))
+        let error = infer_prepared_batch(files.len(), prepared, &mut |_| {}, |_, _| Ok(Vec::new()))
             .unwrap_err();
 
         assert!(matches!(

@@ -47,6 +47,8 @@ cargo test --release --test text_queries --test image_queries -- --test-threads=
 Tests launch the real executable with small PNG corpora and inspect its output, exit codes, timing
 reports, and SQLite state. Each test gets a temporary corpus, index, and cache directory. Its model
 files are symlinks to the shared installation; verification manifests and mutations stay isolated.
+The socket suite exercises automatic startup, shared models and shutdown. One-shot fixtures use
+`--no-server` or `--timing` to keep their model sessions scoped to the command.
 Missing fixture models fail with setup instructions instead of silently skipping a test. An
 unavailable proxy makes accidental download attempts fail.
 

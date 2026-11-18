@@ -2,8 +2,10 @@ mod model_cache;
 
 use std::ffi::OsString;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::net::UnixListener;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
@@ -11,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
+use image::{Rgb, RgbImage};
 use rusqlite::{Connection, params};
 
 const QUERY: &str = "cached query";
@@ -48,19 +51,31 @@ impl Fixture {
         command
     }
 
+    fn search_command(&self, flags: &[&str]) -> Command {
+        let mut command = self.command();
+        command.arg(QUERY).arg("./photos").args(flags);
+        command
+    }
+
     fn search(&self, flags: &[&str]) -> Output {
-        self.command()
-            .arg(QUERY)
-            .arg("./photos")
-            .args(flags)
-            .output()
-            .unwrap()
+        self.search_command(flags).output().unwrap()
     }
 
     fn seed_cached_image(&self, name: &std::ffi::OsStr) -> bool {
+        self.seed_cached_image_in(&self.corpus, name)
+    }
+
+    fn seed_cached_image_in(&self, corpus: &Path, name: &std::ffi::OsStr) -> bool {
         // Let the application create the schema and its model contract metadata.
-        assert_eq!(self.search(&[]).status.code(), Some(1));
-        let image = self.corpus.join(name);
+        let output = self
+            .command()
+            .arg(QUERY)
+            .arg(corpus)
+            .arg("--no-server")
+            .output()
+            .unwrap();
+        assert_status(&output, 1);
+        let image = corpus.join(name);
         if let Err(error) = fs::write(&image, b"cached image contents") {
             // APFS rejects arbitrary filename bytes; Linux filesystems generally permit them.
             if cfg!(target_os = "macos") && error.raw_os_error() == Some(92) {
@@ -89,7 +104,7 @@ impl Fixture {
                 .flat_map(|value| value.to_le_bytes())
                 .collect::<Vec<_>>()
         };
-        let connection = Connection::open(self.corpus.join(".visiongrep.db")).unwrap();
+        let connection = Connection::open(corpus.join(".visiongrep.db")).unwrap();
         connection
             .execute(
                 "INSERT INTO images (path, mtime_ns, size, embedding) VALUES (?1, ?2, ?3, ?4)",
@@ -111,17 +126,10 @@ impl Fixture {
     }
 
     fn start_server(&self) -> Server {
-        self.start_server_with_index(None)
-    }
-
-    fn start_server_with_index(&self, index: Option<&Path>) -> Server {
-        let mut command = self.command();
-        command.current_dir("/").args(["serve", "--socket"]);
-        if let Some(index) = index {
-            command.arg("--index-path").arg(index);
-        }
-        let child = command
-            .arg(&self.corpus)
+        let child = self
+            .command()
+            .current_dir("/")
+            .args(["serve", "--socket"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -130,7 +138,7 @@ impl Fixture {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(path) = self.socket_path()
-                && std::os::unix::net::UnixStream::connect(&path).is_ok()
+                && UnixStream::connect(&path).is_ok()
             {
                 return server;
             }
@@ -143,6 +151,23 @@ impl Fixture {
         }
     }
 
+    fn with_models() -> Self {
+        let fixture = Self::new();
+        model_cache::link_models(
+            &fixture.cache,
+            &[
+                "datacomp_vision_int8.onnx",
+                "datacomp_text.onnx",
+                "datacomp_tokenizer.json",
+            ],
+        );
+        fixture
+    }
+
+    fn stop(&self) -> Output {
+        self.command().args(["server", "stop"]).output().unwrap()
+    }
+
     fn socket_path(&self) -> Option<PathBuf> {
         let run = self.cache.join("visiongrep/run");
         fs::read_dir(run)
@@ -153,8 +178,39 @@ impl Fixture {
     }
 }
 
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if self.socket_path().is_some() {
+            let _ = self.stop();
+        }
+    }
+}
+
+fn assert_status(output: &Output, code: i32) {
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 struct Server {
     child: Child,
+}
+
+impl Server {
+    fn wait_for_exit(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success());
+                return;
+            }
+            assert!(Instant::now() < deadline, "server did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 impl Drop for Server {
@@ -171,8 +227,8 @@ fn cached_results_match_with_and_without_server_and_preserve_path_bytes() {
     if !fixture.seed_cached_image(&name) {
         return;
     }
-    let found = fixture.search(&["--paths-only", "--threshold", "-1"]);
-    let empty = fixture.search(&["--paths-only", "--threshold", "1"]);
+    let found = fixture.search(&["--no-server", "--paths-only", "--threshold", "-1"]);
+    let empty = fixture.search(&["--no-server", "--paths-only", "--threshold", "1"]);
     assert_eq!(found.status.code(), Some(0));
     assert_eq!(found.stdout, b"./photos/photo-\xff.png\n");
     assert_eq!(empty.status.code(), Some(1));
@@ -205,12 +261,24 @@ fn all_output_formats_match_for_a_cached_search() {
         vec!["--null", "--threshold", "-1"],
         vec!["--paths-only", "--threshold", "1"],
     ];
-    let one_shot: Vec<_> = flags.iter().map(|flags| fixture.search(flags)).collect();
-    let _server = fixture.start_server();
+    let one_shot: Vec<_> = flags
+        .iter()
+        .map(|flags| {
+            fixture
+                .search_command(flags)
+                .arg("--no-server")
+                .output()
+                .unwrap()
+        })
+        .collect();
+    assert!(fixture.socket_path().is_none());
+    let mut inode = None;
     for (flags, expected) in flags.iter().zip(one_shot) {
         let actual = fixture.search(flags);
         assert_eq!(actual.status.code(), expected.status.code());
         assert_eq!(actual.stdout, expected.stdout);
+        let current = fs::metadata(fixture.socket_path().unwrap()).unwrap().ino();
+        assert_eq!(*inode.get_or_insert(current), current);
     }
 }
 
@@ -240,25 +308,36 @@ fn relative_query_image_is_resolved_in_client_directory() {
 }
 
 #[test]
-fn stale_socket_falls_back_and_next_server_replaces_it() {
+fn concurrent_start_replaces_a_stale_socket_and_a_duplicate_exits_quietly() {
     let fixture = Fixture::new();
     let server = fixture.start_server();
     let path = fixture.socket_path().unwrap();
     drop(server);
     assert!(path.exists());
-    let fallback = fixture.search(&[]);
-    assert_eq!(fallback.status.code(), Some(1));
-    assert!(fallback.stderr.is_empty());
-    let _server = fixture.start_server();
+
+    let first = fixture
+        .search_command(&[])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let second = fixture
+        .search_command(&[])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert_status(&first.wait_with_output().unwrap(), 1);
+    assert_status(&second.wait_with_output().unwrap(), 1);
+    assert!(UnixStream::connect(&path).is_ok());
     let duplicate = fixture
         .command()
         .args(["serve", "--socket"])
-        .arg(&fixture.corpus)
         .output()
         .unwrap();
-    assert_eq!(duplicate.status.code(), Some(2));
+    assert_status(&duplicate, 0);
     assert!(duplicate.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already running"));
+    assert!(duplicate.stderr.is_empty());
 }
 
 #[test]
@@ -290,7 +369,12 @@ fn special_modes_bypass_a_running_socket() {
     let worker = thread::spawn(move || {
         while !worker_stop.load(Ordering::Relaxed) {
             match listener.accept() {
-                Ok((stream, _)) => drop(stream),
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    let mut request = String::new();
+                    BufReader::new(&stream).read_line(&mut request).unwrap();
+                    writeln!(stream, r#"{{"Error":"unexpected server connection"}}"#).unwrap();
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(5))
                 }
@@ -300,81 +384,211 @@ fn special_modes_bypass_a_running_socket() {
     });
     // A normal search connects and fails, proving that the fake server is reachable.
     assert_eq!(fixture.search(&[]).status.code(), Some(2));
-    for flag in ["--no-cache", "--verify-models", "--timing"] {
+    for flag in ["--no-cache", "--verify-models", "--timing", "--no-server"] {
         assert_eq!(fixture.search(&[flag]).status.code(), Some(1), "{flag}");
     }
+    let opted_out_stop = fixture
+        .command()
+        .args(["--no-server", "server", "stop"])
+        .output()
+        .unwrap();
+    assert_status(&opted_out_stop, 2);
+    assert!(
+        String::from_utf8_lossy(&opted_out_stop.stderr)
+            .contains("--no-server cannot be used with server stop")
+    );
+    assert_status(&fixture.search(&[]), 2);
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
+    fs::remove_file(path).unwrap();
 }
 
 #[test]
-fn reindex_refuses_to_replace_the_index_while_socket_server_is_running() {
+fn one_server_searches_two_folders_with_client_relative_paths() {
     let fixture = Fixture::new();
-    assert!(fixture.seed_cached_image(std::ffi::OsStr::new("photo.png")));
+    let other = fixture.scratch.path().join("other");
+    fs::create_dir(&other).unwrap();
+    assert!(fixture.seed_cached_image(std::ffi::OsStr::new("first.png")));
+    assert!(fixture.seed_cached_image_in(&other, std::ffi::OsStr::new("second.png")));
     let _server = fixture.start_server();
-    let index = fixture.corpus.join(".visiongrep.db");
-    let before = fs::read(&index).unwrap();
+    let first = fixture.search(&["--paths-only"]);
+    let second = fixture
+        .command()
+        .args([
+            QUERY,
+            "./other",
+            "--paths-only",
+            "--index-path",
+            "other/.visiongrep.db",
+        ])
+        .output()
+        .unwrap();
+    assert_status(&first, 0);
+    assert_status(&second, 0);
+    assert_eq!(first.stdout, b"./photos/first.png\n");
+    assert_eq!(second.stdout, b"./other/second.png\n");
+}
 
-    let output = fixture.search(&["--reindex", "--timing", "--verify-models"]);
-    assert_eq!(output.status.code(), Some(2));
+#[test]
+fn stop_without_a_server_is_silent_and_never_starts_one() {
+    let fixture = Fixture::new();
+    let output = fixture.stop();
+    assert_status(&output, 0);
     assert!(output.stdout.is_empty());
-    assert_eq!(
-        output.stderr,
-        b"visiongrep: stop the socket server before --reindex\n"
-    );
-    assert_eq!(fs::read(&index).unwrap(), before);
-    assert_eq!(fixture.search(&["--paths-only"]).status.code(), Some(0));
+    assert!(output.stderr.is_empty());
+    assert!(!fixture.cache.join("visiongrep/run").exists());
 }
 
 #[test]
-fn reindex_only_refuses_the_index_used_by_the_socket_server() {
+fn stop_replies_before_an_in_flight_request_finishes_and_then_removes_the_socket() {
     let fixture = Fixture::new();
-    let server_index = fixture.scratch.path().join("server.db");
-    let other_index = fixture.scratch.path().join("other.db");
-    let _server = fixture.start_server_with_index(Some(&server_index));
-    let search = |index: &Path| {
-        fixture
-            .command()
-            .arg(QUERY)
-            .arg("./photos")
-            .arg("--reindex")
-            .arg("--index-path")
-            .arg(index)
-            .output()
-            .unwrap()
-    };
+    assert!(fixture.seed_cached_image(std::ffi::OsStr::new("first.png")));
+    let mut server = fixture.start_server();
+    let path = fixture.socket_path().unwrap();
+    let root = fixture.corpus.canonicalize().unwrap();
+    let request = serde_json::json!({
+        "Search": {
+            "target": {
+                "root": root.as_os_str().as_bytes(),
+                "index": root.join(".visiongrep.db").as_os_str().as_bytes(),
+            },
+            "query": { "Text": QUERY },
+            "top": 5,
+            "threshold": -1.0,
+            "reindex": false,
+        }
+    });
+    // Queue the search connection before stop, keeping its request in flight until stop replies.
+    let mut in_flight = UnixStream::connect(&path).unwrap();
+    write!(in_flight, "{request}").unwrap();
 
-    let blocked = search(&server_index);
-    assert_eq!(blocked.status.code(), Some(2));
-    assert_eq!(
-        blocked.stderr,
-        b"visiongrep: stop the socket server before --reindex\n"
-    );
-    let allowed = search(&other_index);
-    assert_eq!(allowed.status.code(), Some(1));
-    assert!(other_index.exists());
+    let stopped = fixture.stop();
+    assert_status(&stopped, 0);
+    assert!(stopped.stdout.is_empty());
+    assert!(stopped.stderr.is_empty());
+    assert!(server.child.try_wait().unwrap().is_none());
+
+    writeln!(in_flight).unwrap();
+    in_flight
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut response = String::new();
+    BufReader::new(in_flight).read_line(&mut response).unwrap();
+    let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    assert_eq!(response["Results"].as_array().unwrap().len(), 1);
+    server.wait_for_exit();
+    assert!(!path.exists());
 }
 
 #[test]
-#[ignore = "requires installed model artifacts"]
-fn novel_text_query_through_server_matches_one_shot() {
-    use image::{Rgb, RgbImage};
-    let fixture = Fixture::new();
+fn reindex_and_search_serialize_in_and_out_of_the_server() {
+    let fixture = Fixture::with_models();
     RgbImage::from_pixel(16, 16, Rgb([240, 20, 30]))
         .save(fixture.corpus.join("red.png"))
         .unwrap();
-    model_cache::link_models(
-        &fixture.cache,
-        &[
-            "datacomp_vision_int8.onnx",
-            "datacomp_text.onnx",
-            "datacomp_tokenizer.json",
-        ],
-    );
-    let _server = fixture.start_server();
     let served = fixture.search(&["--json", "--threshold", "-1"]);
-    let one_shot = fixture.search(&["--json", "--threshold", "-1", "--timing"]);
-    assert_eq!(served.status.code(), Some(0));
-    assert_eq!(one_shot.status.code(), Some(0));
+    let one_shot = fixture.search(&["--json", "--threshold", "-1", "--no-server"]);
+    assert_status(&served, 0);
+    assert_status(&one_shot, 0);
     assert_eq!(served.stdout, one_shot.stdout);
+
+    let indexed = fixture
+        .command()
+        .args(["index", "./photos"])
+        .output()
+        .unwrap();
+    assert_status(&indexed, 0);
+    assert!(indexed.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&indexed.stderr).contains("Indexed 1 images"));
+
+    for (rebuild_mode, search_mode) in [
+        (&[][..], &[][..]),
+        (&["--no-server"][..], &[][..]),
+        (&["--no-server"][..], &["--no-server"][..]),
+    ] {
+        let rebuild = fixture
+            .search_command(&["--reindex", "--threshold", "-1"])
+            .args(rebuild_mode)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let search = fixture
+            .search_command(&["--threshold", "-1"])
+            .args(search_mode)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        assert_status(&rebuild.wait_with_output().unwrap(), 0);
+        assert_status(&search.wait_with_output().unwrap(), 0);
+        let connection = Connection::open(fixture.corpus.join(".visiongrep.db")).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        for table in ["images", "queries"] {
+            let rows: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(rows, 1);
+        }
+    }
+}
+
+#[test]
+fn novel_text_search_completes_while_another_folder_is_indexing() {
+    let fixture = Fixture::with_models();
+    let image = RgbImage::from_pixel(16, 16, Rgb([240, 20, 30]));
+    image.save(fixture.corpus.join("red.png")).unwrap();
+    let prepared = fixture
+        .command()
+        .args(["index", "./photos"])
+        .output()
+        .unwrap();
+    assert_status(&prepared, 0);
+
+    let batch = fixture.scratch.path().join("batch");
+    fs::create_dir(&batch).unwrap();
+    for number in 0..96 {
+        image.save(batch.join(format!("{number}.png"))).unwrap();
+    }
+    let mut indexing = fixture
+        .command()
+        .args(["index", "./batch"])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut progress = BufReader::new(indexing.stderr.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert_ne!(
+            progress.read_line(&mut line).unwrap(),
+            0,
+            "indexing never started"
+        );
+        if line.contains("Indexing 96 images") {
+            break;
+        }
+    }
+    let novel = fixture
+        .command()
+        .args(["a novel query", "./photos", "--threshold", "-1"])
+        .output()
+        .unwrap();
+    let still_indexing = indexing.try_wait().unwrap().is_none();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut progress, &mut stderr).unwrap();
+    assert!(indexing.wait().unwrap().success(), "{stderr}");
+    assert_status(&novel, 0);
+    assert!(
+        still_indexing,
+        "the text query waited for indexing to finish"
+    );
 }
