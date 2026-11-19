@@ -13,9 +13,10 @@ mod timing;
 
 use clap::{CommandFactory, error::ErrorKind};
 
-use crate::application::search;
+use crate::application::search_with_models;
 use crate::cli::{Cli, ServeMode, ServerAction, Subcommands, Terminal};
 use crate::error::VisionGrepError;
+use crate::model::Models;
 use crate::timing::{Phase, TimingRecorder};
 
 fn main() {
@@ -86,19 +87,25 @@ fn run() -> Result<ExitStatus, VisionGrepError> {
     } else {
         None
     };
-    let results = match socket_results {
-        Some(results) => results,
-        None => search(
-            &command.request,
-            &mut |event| terminal.handle_event(event),
-            &mut timing,
-        )?,
+    let (results, models) = match socket_results {
+        Some(results) => (results, None),
+        None => {
+            let models = Models::new(command.request.artifact_verification());
+            let results = search_with_models(
+                &command.request,
+                &models,
+                &mut |event| terminal.handle_event(event),
+                &mut timing,
+            )?;
+            (results, Some(models))
+        }
     };
     let status = ExitStatus::from_has_matches(!results.is_empty());
 
     let output_started = timing.start();
     let output = terminal.write_results(&results);
     timing.record(Phase::OutputSerialization, output_started);
+    drop(models);
     timing.finish();
     if let Some(destination) = &command.timing_destination {
         timing.write(destination)?;

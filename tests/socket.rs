@@ -440,6 +440,21 @@ fn stop_without_a_server_is_silent_and_never_starts_one() {
 }
 
 #[test]
+fn stop_shuts_down_a_server_without_model_files() {
+    let fixture = Fixture::new();
+    let mut server = fixture.start_server();
+    let path = fixture.socket_path().unwrap();
+
+    let output = fixture.stop();
+    assert_status(&output, 0);
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    server.wait_for_exit();
+    assert!(!path.exists());
+    assert!(!fixture.cache.join("visiongrep/models").exists());
+}
+
+#[test]
 fn stop_replies_before_an_in_flight_request_finishes_and_then_removes_the_socket() {
     let fixture = Fixture::new();
     assert!(fixture.seed_cached_image(std::ffi::OsStr::new("first.png")));

@@ -63,6 +63,10 @@ impl SearchRequest {
         self.cache_mode == CacheMode::Reindex
     }
 
+    pub(crate) fn artifact_verification(&self) -> ArtifactVerification {
+        self.artifact_verification
+    }
+
     pub(crate) fn query(&self) -> &Query {
         &self.query
     }
@@ -98,15 +102,6 @@ struct SearchOptions {
 }
 
 /// Coordinates one search and reports progress without depending on terminal presentation.
-pub(crate) fn search(
-    request: &SearchRequest,
-    on_event: &mut impl FnMut(SearchEvent),
-    timing: &mut TimingRecorder,
-) -> Result<Vec<SearchResult>, VisionGrepError> {
-    let models = Models::new(request.artifact_verification);
-    search_with_models(request, &models, on_event, timing)
-}
-
 pub(crate) fn search_with_models(
     request: &SearchRequest,
     models: &Models,
@@ -415,6 +410,15 @@ mod tests {
 
     use super::*;
     use crate::embedding::NormalizedEmbedding;
+
+    fn search(
+        request: &SearchRequest,
+        on_event: &mut impl FnMut(SearchEvent),
+        timing: &mut TimingRecorder,
+    ) -> Result<Vec<SearchResult>, VisionGrepError> {
+        let models = Models::new(request.artifact_verification());
+        search_with_models(request, &models, on_event, timing)
+    }
 
     fn write_image(path: &Path) {
         RgbImage::from_pixel(16, 16, Rgb([120, 30, 90]))

@@ -94,6 +94,16 @@ pub(crate) struct ModelPaths {
     pub(crate) tokenizer: PathBuf,
 }
 
+impl ModelPaths {
+    pub(super) fn in_dir(model_dir: &Path) -> Self {
+        Self {
+            vision_model: model_dir.join("datacomp_vision_int8.onnx"),
+            text_model: model_dir.join("datacomp_text.onnx"),
+            tokenizer: model_dir.join("datacomp_tokenizer.json"),
+        }
+    }
+}
+
 pub(crate) enum ArtifactEvent {
     DownloadStarted { artifact: &'static str },
     ContentLength { bytes: u64 },
@@ -102,18 +112,18 @@ pub(crate) enum ArtifactEvent {
 }
 
 pub(crate) fn model_paths() -> Result<ModelPaths, VisionGrepError> {
-    let model_dir = cache_dir()?.join("models");
+    let model_dir = model_dir()?;
     fs::create_dir_all(&model_dir).map_err(|source| VisionGrepError::ArtifactFile {
         operation: "creating model cache directory",
         path: model_dir.clone(),
         source,
     })?;
 
-    Ok(ModelPaths {
-        vision_model: model_dir.join("datacomp_vision_int8.onnx"),
-        text_model: model_dir.join("datacomp_text.onnx"),
-        tokenizer: model_dir.join("datacomp_tokenizer.json"),
-    })
+    Ok(ModelPaths::in_dir(&model_dir))
+}
+
+pub(super) fn model_dir() -> Result<PathBuf, VisionGrepError> {
+    Ok(cache_dir()?.join("models"))
 }
 
 pub(crate) fn timing_metadata() -> ModelMetadata {
@@ -166,6 +176,11 @@ pub(crate) fn ensure_text_artifacts(
     ensure_artifact(TOKENIZER, &paths.tokenizer, on_event, timing, verification)?;
 
     Ok(())
+}
+
+pub(crate) fn text_artifacts_verified(paths: &ModelPaths) -> Result<bool, VisionGrepError> {
+    Ok(verified_manifest_matches(TEXT_MODEL, &paths.text_model)?
+        && verified_manifest_matches(TOKENIZER, &paths.tokenizer)?)
 }
 
 pub(crate) fn cache_dir() -> Result<PathBuf, VisionGrepError> {
