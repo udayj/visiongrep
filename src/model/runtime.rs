@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::thread;
 
 use ndarray::{Array2, Array4};
 use ort::session::Session;
@@ -59,15 +60,22 @@ impl TextSession {
         require_file(&paths.text_model)?;
         require_file(&paths.tokenizer)?;
 
-        let session = load_session(&paths.text_model, TEXT_MODEL_SHA256)?;
-        let tokenizer = tokenizers::Tokenizer::from_file(&paths.tokenizer).map_err(|source| {
-            VisionGrepError::TokenizerLoad {
-                path: paths.tokenizer.clone(),
-                source,
-            }
-        })?;
+        thread::scope(|scope| {
+            let tokenizer = thread::Builder::new()
+                .spawn_scoped(scope, || tokenizers::Tokenizer::from_file(&paths.tokenizer))?;
+            let session = load_session(&paths.text_model, TEXT_MODEL_SHA256);
+            // Handle a tokenizer panic explicitly even when session construction failed.
+            let tokenizer = tokenizer.join();
 
-        Ok(Self { session, tokenizer })
+            let session = session?;
+            let tokenizer = tokenizer
+                .map_err(|_| VisionGrepError::TextModelLoadThreadPanicked)?
+                .map_err(|source| VisionGrepError::TokenizerLoad {
+                    path: paths.tokenizer.clone(),
+                    source,
+                })?;
+            Ok(Self { session, tokenizer })
+        })
     }
 
     /// Tokenizes according to the model's fixed input contract and performs one text inference.

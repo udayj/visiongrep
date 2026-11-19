@@ -318,6 +318,9 @@ pub(crate) enum VisionGrepError {
     #[error("failed to locate home directory")]
     HomeDirectory,
 
+    #[error("the tokenizer loading thread panicked")]
+    TextModelLoadThreadPanicked,
+
     #[error("failed to load tokenizer from {path}: {source}")]
     TokenizerLoad {
         path: PathBuf,

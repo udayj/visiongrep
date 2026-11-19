@@ -320,6 +320,7 @@ fn serve_at(path: &Path, idle_timeout: Duration) -> Result<(), VisionGrepError> 
     let connections = &connections;
     let models = &models;
     thread::scope(|scope| {
+        let _ = thread::Builder::new().spawn_scoped(scope, || models.preload_text());
         thread::Builder::new()
             .spawn_scoped(scope, move || connections.watch(path, idle_timeout))?;
         let result = (|| {
