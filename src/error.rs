@@ -105,9 +105,6 @@ pub(crate) enum VisionGrepError {
     #[error("{message}")]
     SocketRemote { message: String },
 
-    #[error("stdio request exceeds {limit} bytes")]
-    StdioRequestTooLarge { limit: u64 },
-
     #[error("failed to download {artifact} from {url}: {source}")]
     DownloadRequest {
         artifact: &'static str,

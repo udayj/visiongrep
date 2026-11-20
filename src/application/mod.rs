@@ -10,9 +10,7 @@ use crate::index::{
     ImageFile, ImageIndex, IndexLocation, IngestEvent, SearchRoot, discover_images, embed_images,
     ingest_into_index,
 };
-use crate::model::{
-    ArtifactEvent, ArtifactVerification, Models, SessionLifetime, embedding_contract,
-};
+use crate::model::{ArtifactEvent, ArtifactVerification, Models, embedding_contract};
 use crate::ranking::{Ranker, SearchResult};
 use crate::timing::{CacheState, Phase, TimingRecorder};
 
@@ -233,56 +231,6 @@ pub(crate) fn prepare_index(
         |_, _| Ok(()),
     )?;
     index.image_count()
-}
-
-/// Owns the search target and lazy model sessions for a stdio service.
-pub(crate) struct SearchService {
-    root: SearchRoot,
-    location: IndexLocation,
-    models: Models,
-}
-
-impl SearchService {
-    pub(crate) fn open(path: &Path, index_path: Option<&Path>) -> Result<Self, VisionGrepError> {
-        let root = resolve_root(path)?;
-        let location = IndexLocation::resolve(root.filesystem_path(), index_path)?;
-        // Check the index at startup without holding its request lock while waiting for input.
-        ImageIndex::open(
-            &location,
-            root.filesystem_path(),
-            embedding_contract(),
-            || {},
-        )?;
-        Ok(Self {
-            root,
-            location,
-            models: Models::with_lifetime(ArtifactVerification::Fast, SessionLifetime::Process),
-        })
-    }
-
-    pub(crate) fn search(
-        &self,
-        query: &Query,
-        top: usize,
-        threshold: f32,
-        on_event: &mut impl FnMut(SearchEvent),
-        timing: &mut TimingRecorder,
-    ) -> Result<Vec<SearchResult>, VisionGrepError> {
-        validate_search_path(self.root.filesystem_path())?;
-        search_cached(
-            &self.root,
-            &self.location,
-            query.resolve()?,
-            SearchOptions {
-                top,
-                threshold,
-                cache_mode: CacheMode::Use,
-            },
-            &self.models,
-            on_event,
-            timing,
-        )
-    }
 }
 
 fn search_cached(

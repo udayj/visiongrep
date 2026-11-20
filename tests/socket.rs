@@ -129,7 +129,7 @@ impl Fixture {
         let child = self
             .command()
             .current_dir("/")
-            .args(["serve", "--socket"])
+            .args(["server", "run"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -330,11 +330,7 @@ fn concurrent_start_replaces_a_stale_socket_and_a_duplicate_exits_quietly() {
     assert_status(&first.wait_with_output().unwrap(), 1);
     assert_status(&second.wait_with_output().unwrap(), 1);
     assert!(UnixStream::connect(&path).is_ok());
-    let duplicate = fixture
-        .command()
-        .args(["serve", "--socket"])
-        .output()
-        .unwrap();
+    let duplicate = fixture.command().args(["server", "run"]).output().unwrap();
     assert_status(&duplicate, 0);
     assert!(duplicate.stdout.is_empty());
     assert!(duplicate.stderr.is_empty());
@@ -395,7 +391,7 @@ fn special_modes_bypass_a_running_socket() {
     assert_status(&opted_out_stop, 2);
     assert!(
         String::from_utf8_lossy(&opted_out_stop.stderr)
-            .contains("--no-server cannot be used with server stop")
+            .contains("--no-server cannot be used with server commands")
     );
     assert_status(&fixture.search(&[]), 2);
     stop.store(true, Ordering::Relaxed);

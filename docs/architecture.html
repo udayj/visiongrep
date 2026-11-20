@@ -1,0 +1,917 @@
+<title>VisionGrep Field Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Layout: one sketchbook page on graph paper — a clickable module map with pathway overlays, then hands-on algorithm cards. */
+:root{
+  --paper:#f7f8f4;--grid:#e4e8df;--surface:#fffffd;--ink:#1d2430;--muted:#556070;--faint:#8791a0;--line:#d9ddd3;
+  --edge:#5a6473;--hl:#d2402f;--hl-bg:#fde6df;
+  --cli:#2e64b5;--cli-bg:#e6eefb;
+  --app:#7444b9;--app-bg:#efe8fa;
+  --idx:#257a4f;--idx-bg:#e2f2e8;
+  --mdl:#b75f12;--mdl-bg:#fbeedd;
+  --emb:#b23561;--emb-bg:#fae6ee;
+  --ext:#6a7381;--ext-bg:#eef0f2;
+  --hand:"Caveat","Segoe Print","Bradley Hand",cursive;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#15191f;--grid:#1f252d;--surface:#1b2028;--ink:#e8ecf1;--muted:#a9b3c0;--faint:#7c8695;--line:#2d3440;
+  --edge:#9aa4b2;--hl:#ff8a70;--hl-bg:#3a2320;
+  --cli:#82aef0;--cli-bg:#1b2840;--app:#b996ef;--app-bg:#2a2140;--idx:#6fcf9b;--idx-bg:#17301f;
+  --mdl:#f0a35a;--mdl-bg:#352611;--emb:#f087ad;--emb-bg:#391a27;--ext:#a3acb9;--ext-bg:#252b33;
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --paper:#15191f;--grid:#1f252d;--surface:#1b2028;--ink:#e8ecf1;--muted:#a9b3c0;--faint:#7c8695;--line:#2d3440;
+  --edge:#9aa4b2;--hl:#ff8a70;--hl-bg:#3a2320;
+  --cli:#82aef0;--cli-bg:#1b2840;--app:#b996ef;--app-bg:#2a2140;--idx:#6fcf9b;--idx-bg:#17301f;
+  --mdl:#f0a35a;--mdl-bg:#352611;--emb:#f087ad;--emb-bg:#391a27;--ext:#a3acb9;--ext-bg:#252b33;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background-color:var(--paper);background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:24px 24px;color:var(--ink);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1320px;margin:0 auto;padding-block:36px 72px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+header h1{font:700 46px/1.05 var(--hand);margin:0 0 6px;text-wrap:balance}
+header h1 span{color:var(--hl)}
+header p{margin:0;color:var(--muted);max-width:68ch}
+.meta{margin-top:10px;font:12.5px var(--mono);color:var(--faint)}
+h2{font:700 32px/1.1 var(--hand);margin:56px 0 4px;text-wrap:balance}
+.lede{color:var(--muted);margin:0 0 18px;max-width:72ch}
+code,kbd{font:12.5px var(--mono);background:var(--ext-bg);padding:1px 5px;border-radius:5px;overflow-wrap:anywhere}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--hl);outline-offset:2px}
+
+/* pathway bar */
+.paths{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 12px}
+.chip{font:600 13px var(--sans);background:var(--surface);border:1.5px solid var(--line);border-radius:999px;padding:6px 13px;cursor:pointer;display:inline-flex;gap:7px;align-items:center}
+.chip:hover{border-color:var(--edge)}
+.chip[aria-pressed="true"]{background:var(--hl-bg);border-color:var(--hl);color:var(--ink)}
+.chip small{font:500 11px var(--mono);color:var(--faint)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12.5px;color:var(--muted);margin:0 0 10px}
+.legend button{display:inline-flex;align-items:center;gap:7px;background:none;border:0;cursor:pointer;padding:2px 0;color:var(--muted)}
+.legend button[aria-pressed="true"]{color:var(--ink);font-weight:600}
+.legend i{width:15px;height:15px;border-radius:4px;border:1.8px solid;display:inline-block}
+
+.board{position:relative;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
+.canvas{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow-x:auto;padding:4px;min-width:0}
+.canvas svg{display:block;width:100%;min-width:960px;height:auto}
+.node{cursor:pointer}
+.node .title{font:700 21px var(--hand);fill:var(--ink)}
+.node .sub{font:500 11.5px var(--mono);fill:var(--muted)}
+.node.dim,.edge.dim,.badge.dim{opacity:.16}
+.node:focus{outline:none}
+.node:focus-visible .outline{stroke-width:3.4}
+.node.sel .outline{stroke-width:3}
+.edge path{fill:none;stroke:var(--edge);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.edge.dashed path.ln{stroke-dasharray:5 6}
+.edge.on path{stroke:var(--hl);stroke-width:2.4}
+.edge.focus path{stroke-width:3.6}
+.edge text{font:600 15px var(--hand);fill:var(--muted);paint-order:stroke;stroke:var(--surface);stroke-width:5px;stroke-linejoin:round}
+.edge.on text{fill:var(--hl)}
+.badge circle{fill:var(--hl)}
+.badge text{font:700 11px var(--sans);fill:var(--surface);text-anchor:middle;dominant-baseline:central}
+.badge.focus circle{r:13}
+.badge.gone{display:none}
+@media (prefers-reduced-motion:no-preference){
+  .edge.on path.ln{stroke-dasharray:7 7;animation:flow 1s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-14}}
+}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px 18px 16px;position:sticky;top:max(12px,env(safe-area-inset-top,0px));max-height:calc(100vh - 24px);overflow:auto;min-width:0}
+.panel .tag{display:inline-block;font:600 11px var(--sans);letter-spacing:.5px;text-transform:uppercase;padding:2px 9px;border-radius:999px;border:1.5px solid;margin-bottom:6px}
+.panel h3{font:700 27px/1.1 var(--hand);margin:0 0 2px}
+.panel .file{font:12px var(--mono);color:var(--faint);margin:0 0 10px}
+.panel .what{color:var(--muted);margin:0 0 12px;font-size:14px}
+.panel dl{margin:0;display:grid;gap:9px}
+.panel dt{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.panel dd{margin:0;font-size:13.5px}
+.panel .jump{margin-top:14px;display:inline-block;font:700 18px var(--hand);color:var(--hl);text-decoration:none}
+.steps{margin:0;padding:0;list-style:none;display:grid;gap:2px;counter-reset:st}
+.steps li{display:grid;grid-template-columns:24px minmax(0,1fr);gap:8px;padding:6px 8px;border-radius:10px;cursor:pointer;font-size:13.5px;color:var(--muted)}
+.steps li:hover{background:var(--paper)}
+.steps li.cur{background:var(--hl-bg);color:var(--ink)}
+.steps li b{width:22px;height:22px;border-radius:50%;background:var(--hl);color:var(--surface);font:700 11px var(--sans);display:grid;place-items:center;margin-top:1px}
+.stepctl{display:flex;gap:8px;margin:10px 0 4px;flex-wrap:wrap}
+.btn{font:600 13px var(--sans);background:var(--surface);border:1.5px solid var(--line);border-radius:9px;padding:5px 12px;cursor:pointer}
+.btn:hover{border-color:var(--edge)}
+.btn.primary{border-color:var(--hl);color:var(--hl)}
+.hint{font-size:13px;color:var(--faint)}
+.cmd{font:12.5px var(--mono);background:var(--paper);border:1px dashed var(--line);border-radius:8px;padding:8px 10px;margin:4px 0 12px;overflow-x:auto;white-space:pre}
+
+/* algorithm cards */
+.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px 18px 16px;min-width:0;position:relative}
+.card .k{font:600 11px var(--sans);letter-spacing:.5px;text-transform:uppercase;color:var(--faint)}
+.card h3{font:700 26px/1.1 var(--hand);margin:2px 0 4px}
+.card p{margin:0 0 10px;color:var(--muted);font-size:14px;max-width:70ch}
+.card .src{font:11.5px var(--mono);color:var(--faint);position:absolute;top:18px;right:18px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.row label{font-size:13px;color:var(--muted);display:inline-flex;gap:8px;align-items:center}
+input[type=range]{accent-color:var(--hl)}
+input[type=number]{font:13px var(--mono);width:96px;padding:4px 6px;border:1.5px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink)}
+.out{font:12.5px var(--mono);color:var(--ink);background:var(--paper);border-radius:10px;padding:10px 12px;overflow-x:auto}
+.tabular{font-variant-numeric:tabular-nums}
+
+.mw{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;font:12.5px var(--mono)}
+.mw h4{font:700 18px var(--hand);margin:0 0 4px;color:var(--muted)}
+.mw .it{display:flex;justify-content:space-between;gap:8px;padding:5px 8px;border-radius:7px;border:1.5px solid transparent;margin-bottom:3px;background:var(--paper)}
+.mw .it.ptr{border-color:var(--hl)}
+.mw .it.done{opacity:.45}
+.mw .it span:last-child{color:var(--faint)}
+.verdict{margin-top:10px;font-size:13.5px;min-height:42px;padding:8px 10px;border-radius:10px;background:var(--hl-bg)}
+.buckets{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;font:12.5px var(--mono)}
+.buckets div{border:1.5px dashed var(--line);border-radius:10px;padding:8px 10px;min-height:56px}
+.buckets b{display:block;font:700 17px var(--hand);color:var(--muted)}
+
+.heap .r{display:grid;grid-template-columns:150px minmax(0,1fr) 54px 72px;gap:8px;align-items:center;font:12.5px var(--mono);padding:2px 0}
+.heap .bar{height:12px;border-radius:4px;background:var(--line);position:relative;overflow:hidden}
+.heap .bar i{position:absolute;inset:0 auto 0 0;background:var(--edge);border-radius:4px}
+.heap .r.kept .bar i{background:var(--hl)}
+.heap .r.cut{color:var(--faint)}
+.heap .r.cut .bar i{opacity:.35}
+.heap .st{font:600 11px var(--sans);text-transform:uppercase;letter-spacing:.4px}
+.heap .r.kept .st{color:var(--hl)}
+.heap .thr{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink)}
+
+.ladder{display:grid;gap:6px;margin-top:8px}
+.ladder div{border:1.5px solid var(--line);border-radius:10px;padding:7px 10px;font-size:13.5px;color:var(--faint);background:var(--paper)}
+.ladder div.on{border-color:var(--hl);color:var(--ink);background:var(--hl-bg)}
+.ladder div.end.on{font-weight:600}
+.ladder small{display:block;font:11.5px var(--mono);color:var(--faint)}
+
+.inv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.inv .card h3{font-size:23px}
+.inv ul{margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--muted)}
+.inv li{margin:2px 0}
+.lanes{display:grid;gap:8px;margin-top:6px}
+.lane{display:grid;grid-template-columns:110px minmax(0,1fr);gap:10px;align-items:center;font-size:12.5px}
+.lane .track{position:relative;height:26px;border-radius:7px;background:var(--paper);border:1px solid var(--line)}
+.lane .seg{position:absolute;top:3px;bottom:3px;border-radius:5px;font:600 11px var(--sans);display:flex;align-items:center;padding:0 6px;white-space:nowrap;overflow:hidden;border:1.5px solid}
+
+@media (max-width:1100px){
+  .board{grid-template-columns:minmax(0,1fr)}
+  .panel{position:static;max-height:none}
+  .inv{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:760px){
+  .cards,.inv{grid-template-columns:minmax(0,1fr)}
+  header h1{font-size:38px}
+  .heap .r{grid-template-columns:110px minmax(0,1fr) 46px 62px}
+  .card .src{position:static;display:block;margin-bottom:4px}
+}
+</style>
+
+<div class="wrap">
+<header>
+  <h1>VisionGrep <span>field map</span></h1>
+  <p>How a query like <code>visiongrep "a dog on a beach" ./photos</code> travels through the crate: argument parsing, the auto-started shared server, the SQLite index, CLIP inference with ONNX Runtime, and top-K ranking. Click any box for its responsibilities and invariants, pick a pathway to trace it step by step, and try the algorithms further down.</p>
+  <div class="meta">visiongrep 0.4.2 · branch refactor/server-run · ~11.4k lines of Rust across 28 files</div>
+</header>
+
+<h2>Module map</h2>
+<p class="lede">Each box is a module; its colour is its layer. Arrows point from caller to callee. Choose a pathway to light up the route a command takes. Numbered badges give the order.</p>
+
+<div class="legend" id="legend"></div>
+<div class="paths" id="paths" role="group" aria-label="Pathways"></div>
+
+<div class="board">
+  <div class="canvas"><svg id="map" viewBox="0 0 1300 820" role="img" aria-label="VisionGrep module map"></svg></div>
+  <aside class="panel" id="panel" aria-live="polite"></aside>
+</div>
+
+<h2 id="algos">Algorithms worth knowing</h2>
+<p class="lede">The handful of routines that decide correctness and speed. Each card runs the same logic as the Rust source, on example data.</p>
+
+<div class="cards">
+  <section class="card" id="algo-merge">
+    <span class="src">index/store.rs · plan_reconciliation</span>
+    <div class="k">Index freshness</div>
+    <h3>Reconciliation merge walk</h3>
+    <p>Discovery and the cache are both sorted by raw path bytes, so one linear walk finds what to embed and what to delete. Change detection is <code>(mtime_ns, size)</code>; contents are never hashed.</p>
+    <div class="mw" id="mw"></div>
+    <div class="verdict" id="mwv"></div>
+    <div class="buckets"><div><b>missing → embed</b><span id="mwm">—</span></div><div><b>stale → DELETE</b><span id="mws">—</span></div></div>
+    <div class="row"><button class="btn primary" id="mwStep">Step</button><button class="btn" id="mwAll">Run to end</button><button class="btn" id="mwReset">Reset</button></div>
+  </section>
+
+  <section class="card" id="algo-heap">
+    <span class="src">ranking.rs · Ranker::rank</span>
+    <div class="k">Ranking</div>
+    <h3>Threshold + bounded top-K heap</h3>
+    <p>Embeddings are unit vectors, so cosine similarity is a plain dot product. Scores below the threshold are dropped. The rest go through a max-heap ordered so its root is the <em>worst</em> kept result, giving O(n log k). Equal scores are ordered by path.</p>
+    <div class="row">
+      <label for="thr">threshold <input type="range" id="thr" min="-0.10" max="0.40" step="0.01" value="0.25"> <b class="tabular" id="thrv">0.25</b></label>
+      <label for="topk">--top <input type="range" id="topk" min="1" max="8" step="1" value="5"> <b class="tabular" id="topv">5</b></label>
+    </div>
+    <div class="heap" id="heap"></div>
+    <div class="out" id="heapout" style="margin-top:8px"></div>
+  </section>
+
+  <section class="card" id="algo-crop">
+    <span class="src">embedding.rs · resize_and_center_crop</span>
+    <div class="k">Preprocessing</div>
+    <h3>Short-edge resize, centre crop</h3>
+    <p>Matches OpenCLIP evaluation exactly: scale the short edge to 256 with a port of Pillow's fixed-point bicubic filter, crop the centre 256×256 with round-half-to-even offsets, then normalise each channel with CLIP's mean and std into a <code>[3,256,256]</code> tensor.</p>
+    <div class="row">
+      <label for="cw">width <input type="number" id="cw" value="4032" min="1"></label>
+      <label for="ch">height <input type="number" id="ch" value="3024" min="1"></label>
+      <button class="btn" data-wh="6000,4000">24 MP RAW</button><button class="btn" data-wh="1080,1920">phone portrait</button><button class="btn" data-wh="257,256">257×256</button>
+    </div>
+    <svg id="cropsvg" viewBox="0 0 560 210" style="width:100%;height:auto;display:block"></svg>
+    <div class="out tabular" id="cropout"></div>
+  </section>
+
+  <section class="card" id="algo-batch">
+    <span class="src">index/ingest.rs · ingest_into_index</span>
+    <div class="k">Throughput</div>
+    <h3>Ingestion batching</h3>
+    <p>Images are committed in transactions of 256, so an interrupted run resumes. Each transaction is split into vision runs of 8. A rayon pool owned by this one operation decodes and preprocesses those 8 in parallel. An unreadable or oversized file is skipped; an inference or database error aborts.</p>
+    <div class="row">
+      <label for="bn">changed images <input type="range" id="bn" min="1" max="1400" value="600"> <b class="tabular" id="bnv">600</b></label>
+      <label for="bc">CPU cores <input type="range" id="bc" min="1" max="16" value="10"> <b class="tabular" id="bcv">10</b></label>
+    </div>
+    <svg id="batchsvg" viewBox="0 0 560 120" style="width:100%;height:auto;display:block"></svg>
+    <div class="out tabular" id="batchout"></div>
+  </section>
+
+  <section class="card" id="algo-artifacts">
+    <span class="src">model/artifacts.rs · ensure_artifact</span>
+    <div class="k">Model install</div>
+    <h3>Artifact verification ladder</h3>
+    <p>Three pinned files (INT8 vision model 118.8 MB, FP32 text model 254.3 MB, tokenizer 2.2 MB). The common path skips hashing by trusting a manifest tied to the file's identity. Any doubt falls through to a full SHA-256 check or a fresh download.</p>
+    <div class="row" id="artBtns"></div>
+    <div class="ladder" id="artLadder"></div>
+  </section>
+
+  <section class="card" id="algo-graph">
+    <span class="src">model/graph_cache.rs · load_session</span>
+    <div class="k">Cold start</div>
+    <h3>Optimized graph cache, fail-open</h3>
+    <p>ONNX Runtime's level-3 graph optimisation is slow, so its output is saved under <code>models/optimized/&lt;key&gt;.onnx</code>. The key is a SHA-256 over cache format, model hash, ORT build, optimisation level, provider, OS, arch and CPU features. Any failure falls back to the verified source model.</p>
+    <div class="row" id="gcBtns"></div>
+    <div class="ladder" id="gcLadder"></div>
+  </section>
+</div>
+
+<h2>Sessions, threads and locks</h2>
+<p class="lede">VisionGrep is synchronous. It runs things concurrently with scoped threads and a small rayon pool, and never uses an async runtime.</p>
+<div class="cards">
+  <section class="card" id="algo-life">
+    <span class="src">model/mod.rs · SessionLifetime</span>
+    <div class="k">Memory</div>
+    <h3>Who keeps which model loaded</h3>
+    <p><code>Models</code> holds each ORT session as <code>Mutex&lt;Option&lt;_&gt;&gt;</code> and loads it on first use. A one-shot search drops the vision session before loading text to cap peak memory. The server keeps both for the next request.</p>
+    <div class="row" id="lifeBtns"></div>
+    <div class="lanes" id="lanes"></div>
+    <p class="hint" style="margin-top:10px" id="lifeNote"></p>
+  </section>
+  <section class="card">
+    <span class="src">cli/socket.rs · runtime.rs · ingest.rs</span>
+    <div class="k">Concurrency</div>
+    <h3>Every thread in the program</h3>
+    <ul style="margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--muted);display:grid;gap:5px">
+      <li><b>Server accept loop</b>: waits on a <code>Condvar</code> until fewer than 8 connections are active, then spawns one scoped thread per connection (30 s socket timeouts, 1 MiB request cap).</li>
+      <li><b>Idle watchdog</b>: when the active count reaches zero, starts a 10-minute timer, then stops the server and wakes the accept loop with a dummy connect.</li>
+      <li><b>Text preload</b>: at server start, loads the text session if the artifacts are already verified, so the first text query skips model load.</li>
+      <li><b>Tokenizer loader</b>: <code>TextSession::load</code> parses <code>tokenizer.json</code> on a scoped thread while ORT builds the session.</li>
+      <li><b>Preprocessing pool</b>: <code>min(cores, 4, files)</code> rayon workers decode and resize images; order and per-file errors are kept.</li>
+      <li><b>Lock order</b>: the index file lock (<code>&lt;db&gt;.lock</code>, flock) is always taken before a model mutex. Two requests on the same index queue up; requests on different folders run concurrently.</li>
+    </ul>
+  </section>
+</div>
+
+<h2>Invariants and contracts</h2>
+<p class="lede">The rules other modules rely on. Each has one owning module.</p>
+<div class="inv">
+  <section class="card"><div class="k">embedding.rs owns</div><h3>Unit-norm embeddings</h3>
+    <ul><li><code>NormalizedEmbedding(Box&lt;[f32; 512]&gt;)</code> can only be built normalized.</li><li>Model output: rejects NaN/∞ and zero norm, then divides by the L2 norm.</li><li>From SQLite: 2048 little-endian bytes, and the norm must be within 1e-3 of 1.</li><li>So <code>dot()</code> is cosine similarity.</li></ul></section>
+  <section class="card"><div class="k">index/store.rs owns</div><h3>Index identity</h3>
+    <ul><li><code>user_version = 3</code>. A newer schema is an error and the file is left untouched; an older one is rebuilt.</li><li>The stored <code>search_root</code> must match, so an index can't be reused for another folder.</li><li>The image and query contract strings are checked separately. A model change clears only the affected table.</li></ul></section>
+  <section class="card"><div class="k">main.rs owns</div><h3>Exit codes and streams</h3>
+    <ul><li><b>0</b> results · <b>1</b> searched, nothing ≥ threshold · <b>2</b> error.</li><li>Only results go to stdout. Progress, waits and warnings go to stderr.</li><li>A broken pipe (<code>| head -1</code>) keeps the search's status.</li></ul></section>
+  <section class="card"><div class="k">scan.rs · terminal.rs</div><h3>Exact path bytes</h3>
+    <ul><li>Paths are stored as BLOBs of native Unix bytes and sorted bytewise.</li><li>Text output escapes control and non-UTF-8 bytes; <code>-0</code> writes them raw.</li><li><code>--json</code> refuses non-UTF-8 paths rather than corrupting them.</li></ul></section>
+  <section class="card"><div class="k">artifacts.rs owns</div><h3>Pinned model contract</h3>
+    <ul><li>OpenCLIP ViT-B/32-256 DataComp s34b b86k. Vision is dynamic INT8; the final projection and first block stay FP32.</li><li>Revisions, sizes and SHA-256s are compiled in.</li><li>Text is padded to 77 tokens with pad id 0, so EOT pooling matches the reference.</li></ul></section>
+  <section class="card"><div class="k">decode/ owns</div><h3>Bounded decoding</h3>
+    <ul><li>Dimensions and estimated working memory are checked before any pixel is decoded: ≤ 100 MP and ≤ 512 MiB.</li><li>RAW: the largest valid embedded JPEG (≤ 64 MiB), short edge ≥ 256. Container walks cap IFDs and boxes.</li><li>EXIF orientation is applied before preprocessing.</li></ul></section>
+</div>
+</div>
+
+<script>
+(() => {
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const el = (n, a = {}, p) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; };
+const h = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+
+// ---------- sketch primitives (seeded so the drawing is stable) ----------
+function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const jit = (r, a) => (r() - 0.5) * 2 * a;
+function wobblyLine(r, x1, y1, x2, y2, amp) {
+  const mx = (x1 + x2) / 2 + jit(r, amp), my = (y1 + y2) / 2 + jit(r, amp);
+  return `M${(x1 + jit(r, amp)).toFixed(1)} ${(y1 + jit(r, amp)).toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${(x2 + jit(r, amp)).toFixed(1)} ${(y2 + jit(r, amp)).toFixed(1)}`;
+}
+function sketchRect(x, y, w, hh, seed) {
+  const r = rng(seed), d = [];
+  for (let pass = 0; pass < 2; pass++) {
+    const o = pass ? 2.2 : 0;
+    d.push(wobblyLine(r, x - o, y + o * .3, x + w + o, y - o * .3, 1.6));
+    d.push(wobblyLine(r, x + w + o * .3, y - o, x + w - o * .3, y + hh + o, 1.6));
+    d.push(wobblyLine(r, x + w + o, y + hh - o * .3, x - o, y + hh + o * .3, 1.6));
+    d.push(wobblyLine(r, x - o * .3, y + hh + o, x + o * .3, y - o, 1.6));
+  }
+  return d.join(" ");
+}
+function sketchPath(pts, seed) {
+  const r = rng(seed); let d = `M${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length; i++) {
+    const [x1, y1] = pts[i - 1], [x2, y2] = pts[i];
+    const len = Math.hypot(x2 - x1, y2 - y1), bow = Math.min(3.5, len * .02);
+    const nx = -(y2 - y1) / (len || 1), ny = (x2 - x1) / (len || 1), b = jit(r, bow);
+    d += ` Q${((x1 + x2) / 2 + nx * b).toFixed(1)} ${((y1 + y2) / 2 + ny * b).toFixed(1)} ${x2} ${y2}`;
+  }
+  return d;
+}
+function arrowHead(pts) {
+  const [x1, y1] = pts[pts.length - 2], [x2, y2] = pts[pts.length - 1];
+  const a = Math.atan2(y2 - y1, x2 - x1), l = 11, s = .42;
+  return `M${(x2 - l * Math.cos(a - s)).toFixed(1)} ${(y2 - l * Math.sin(a - s)).toFixed(1)} L${x2} ${y2} L${(x2 - l * Math.cos(a + s)).toFixed(1)} ${(y2 - l * Math.sin(a + s)).toFixed(1)}`;
+}
+function midpoint(pts) {
+  let total = 0; const segs = [];
+  for (let i = 1; i < pts.length; i++) { const l = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); segs.push(l); total += l; }
+  let t = total / 2;
+  for (let i = 0; i < segs.length; i++) { if (t <= segs[i]) { const f = t / (segs[i] || 1); return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * f, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * f]; } t -= segs[i]; }
+  return pts[0];
+}
+
+// ---------- layers ----------
+const L = {
+  cli: { c: "var(--cli)", bg: "var(--cli-bg)", name: "CLI & servers" },
+  app: { c: "var(--app)", bg: "var(--app-bg)", name: "Orchestration" },
+  idx: { c: "var(--idx)", bg: "var(--idx-bg)", name: "Index & persistence" },
+  mdl: { c: "var(--mdl)", bg: "var(--mdl-bg)", name: "Models & inference" },
+  emb: { c: "var(--emb)", bg: "var(--emb-bg)", name: "Pixels, vectors, ranking" },
+  ext: { c: "var(--ext)", bg: "var(--ext-bg)", name: "Outside the binary" },
+};
+
+// ---------- nodes ----------
+const A = 30, B = 290, C = 560, D = 840, E = 1080;
+const N = [
+  { id: "caller", L: "ext", x: A, y: 30, w: 200, h: 70, dashed: true, t: "You · script · agent", s: ["a shell command"],
+    what: "Anyone running the binary: a person, a shell pipeline, or a coding agent. VisionGrep treats its CLI as an API: stable stdout formats and meaningful exit codes.",
+    rows: [["Typical", "<code>visiongrep \"sunset\" ./photos --json --top 10</code>"], ["Formats", "text (score⇥path), <code>--json</code>, <code>--paths-only</code>, <code>-0</code> (NUL-separated)"]] },
+  { id: "main", L: "cli", x: A, y: 150, w: 200, h: 90, t: "main.rs · run()", s: ["parse → route → exit"], file: "src/main.rs",
+    what: "Process entry. Parses arguments, picks a route (shared server, in-process, index, server run/stop), writes results and is the only place that calls process::exit.",
+    rows: [["Exit codes", "0 matches · 1 searched but nothing ≥ threshold · 2 operational or argument error"], ["Server route", "Taken unless <code>--no-server</code>, <code>--no-cache</code>, <code>--verify-models</code> or <code>--timing</code>. If the server can't be reached before it answers, the search reruns in-process."], ["Broken pipe", "<code>preserve_status_on_broken_pipe</code>: a reader closing early keeps the found / not-found status"]] },
+  { id: "args", L: "cli", x: A, y: 290, w: 200, h: 70, t: "cli/args.rs", s: ["clap derive → Command"], file: "src/cli/args.rs",
+    what: "Typed clap parsing into a Command: a SearchRequest plus output format, quiet flag and timing destination.",
+    rows: [["Validates", "Exactly one query (text or <code>--image</code>), non-blank text, threshold in [-1, 1], top ≥ 1, <code>--reindex</code> ⟂ <code>--no-cache</code>, <code>-0</code> needs <code>--paths-only</code>"], ["Paths", "<code>OsString</code> throughout, so non-UTF-8 image paths survive"], ["Quirk", "A subcommand word can still be a literal query, e.g. <code>visiongrep index ./photos</code> versus <code>visiongrep -- index ./photos</code>"]] },
+  { id: "indexCmd", L: "cli", x: A, y: 410, w: 200, h: 76, t: "cli/index.rs", s: ["visiongrep index DIR"], file: "src/cli/index.rs",
+    what: "Prepares a folder ahead of time: downloads models, embeds new or changed images, and warms both optimized graphs, without running a query.",
+    rows: [["Route", "<code>socket::try_index</code>, else <code>prepare_index</code> in-process"], ["Output", "Nothing on stdout. Prints \"Indexed N images in DIR; searches are ready\" on stderr"], ["Resumable", "Commits every 256 images, so rerunning continues where it stopped"]] },
+  { id: "terminal", L: "cli", x: A, y: 600, w: 200, h: 96, t: "cli/terminal.rs", s: ["stdout: results", "stderr: progress"], file: "src/cli/terminal.rs",
+    what: "All user-facing output. Turns SearchEvents into progress UI on stderr and SearchResults into the chosen stdout format.",
+    rows: [["Formats", "<code>Text | Json | PathsOnly | PathsNull</code>"], ["Progress", "indicatif bar on a TTY. Otherwise a plain \"Indexed N/TOTAL images\" line every 256 images"], ["Safety", "Text escapes tabs, newlines, backslashes and invalid UTF-8; JSON rejects non-UTF-8 paths explicitly"]] },
+  { id: "socketClient", L: "cli", x: B, y: 40, w: 210, h: 90, t: "socket client", s: ["connect_or_start", "try_search · try_index"], file: "src/cli/socket.rs",
+    what: "Finds the shared server or starts it, sends one JSON request and relays the streamed events to the Terminal.",
+    rows: [["Socket path", "<code>cache/run/&lt;8 bytes of sha256(exe path, size, mtime)&gt;.sock</code>: one server per user, cache dir and binary build"], ["Auto-start", "Spawns <code>visiongrep server run</code> (null stdio, its own process group) and polls every 10 ms for up to 2 s"], ["Fallback", "Any failure before a response → returns None and main runs in-process"], ["Wire", "Paths travel as raw byte arrays, so non-UTF-8 survives"]] },
+  { id: "socketServer", L: "cli", x: B, y: 190, w: 210, h: 110, t: "shared server", s: ["server run", "≤ 8 conns · 10 min idle", "Models: Process lifetime"], file: "src/cli/socket.rs",
+    what: "A background process that keeps both CLIP sessions loaded and serves any folder. Each connection is one JSON request; replies stream progress events, then one final line.",
+    rows: [["Requests", "<code>Search{target, query, top, threshold, reindex}</code> · <code>Index(target)</code> · <code>Stop</code>"], ["Replies", "<code>Event</code>* then <code>Results</code> | <code>Indexed(n)</code> | <code>Error</code> | <code>Stopped</code>"], ["Limits", "8 concurrent connections (Mutex + Condvar), 30 s socket timeouts, 1 MiB per request line"], ["Lifecycle", "Preloads the text model at start; a watchdog exits after 10 idle minutes; <code>visiongrep server stop</code> lets active requests finish"]] },
+  { id: "ranking", L: "emb", x: B, y: 600, w: 210, h: 90, t: "ranking.rs", s: ["dot product · threshold", "bounded top-K heap"], file: "src/ranking.rs", algo: "algo-heap",
+    what: "Scores every candidate against the query and returns a deterministic top-K.",
+    rows: [["Score", "<code>left.dot(right)</code>: cosine similarity, because both sides are unit vectors"], ["Threshold", "Inclusive (score ≥ t). Default 0.25. Good matches usually score 0.25–0.35."], ["Selection", "<code>BinaryHeap</code> with reversed ordering, so the root is the worst kept result; final sort by score desc, then path asc"]] },
+  { id: "timing", L: "ext", x: A, y: 742, w: 200, h: 52, t: "timing.rs", s: ["--timing JSON report"], file: "src/timing.rs",
+    what: "Optional per-phase profiler threaded through every layer as &mut TimingRecorder.",
+    rows: [["Phases", "18, from path canonicalization to output serialization; plus cache states (hit, miss, absent, changed, reindexed)"], ["Cost when off", "<code>start()</code> returns None, so nothing is measured"]] },
+  { id: "error", L: "ext", x: B, y: 742, w: 210, h: 52, t: "error.rs", s: ["VisionGrepError (thiserror)"], file: "src/error.rs",
+    what: "The application error type plus focused subsystem errors (EmbeddingError, ImagePreparationError). Variants carry paths and #[source] errors.",
+    rows: [["Policy", "No anyhow, no unwrap in production code, no string-typed errors"], ["Notable", "<code>is_broken_pipe()</code> lets main treat a closed pipe as success"]] },
+  { id: "app", L: "app", x: C, y: 170, w: 220, h: 130, t: "application", s: ["search_with_models", "Use · Reindex · Disabled", "prepare_index", "search_cached · search_index"], file: "src/application/mod.rs",
+    what: "Orchestrates one search without knowing about terminals or sockets. Progress leaves through an on_event callback as SearchEvent::{WaitingForIndex, Index, Artifact}.",
+    rows: [["Use (default)", "open index → discover → reconcile → ingest missing → load all embeddings → prepare query → rank"], ["Reindex", "Builds a staged replacement DB, searches it, then installs it atomically"], ["Disabled (--no-cache)", "Embeds every image in memory; nothing is read or written"], ["prepare_index", "Refreshes the index and loads the text session, used by <code>visiongrep index</code>"]] },
+  { id: "query", L: "app", x: C, y: 340, w: 220, h: 90, t: "application/query.rs", s: ["Query::Text | Image", "resolve → prepare"], file: "src/application/query.rs",
+    what: "Turns a query into a NormalizedEmbedding and decides which candidates remain.",
+    rows: [["Text", "Cache lookup by exact text (case and whitespace count) → else <code>with_text</code> → upsert into <code>queries</code>"], ["Image", "Canonicalized, must be a regular file, opened once so a FIFO can't block. If it is inside the corpus, its cached embedding is reused and it is removed from candidates. Otherwise it is embedded once and not stored."], ["Empty corpus", "Returns None without loading any model"]] },
+  { id: "models", L: "mdl", x: C, y: 490, w: 220, h: 96, t: "model/mod.rs · Models", s: ["Mutex<Option<VisionSession>>", "Mutex<Option<TextSession>>"], file: "src/model/mod.rs", algo: "algo-life",
+    what: "Lazy owner of both ONNX sessions. with_vision / with_text install artifacts and load the session on first use, then lend it to a closure.",
+    rows: [["Search lifetime", "Drops vision before loading text to cap peak memory (one-shot runs)"], ["Process lifetime", "Keeps both loaded (shared server)"], ["Lock order", "Index file lock first, then a model mutex"]] },
+  { id: "artifacts", L: "mdl", x: C, y: 650, w: 220, h: 90, t: "model/artifacts.rs", s: ["pinned URLs · SHA-256", ".verified.json manifests"], file: "src/model/artifacts.rs", algo: "algo-artifacts",
+    what: "Installs and verifies the three pinned model files under $XDG_CACHE_HOME/visiongrep/models.",
+    rows: [["Files", "datacomp_vision_int8.onnx (118.8 MB) · datacomp_text.onnx (254.3 MB) · datacomp_tokenizer.json (2.2 MB)"], ["Fast mode", "A manifest tied to the file's identity skips hashing"], ["Download", "Streams to a sibling temp file, checks Content-Length, size and SHA-256, then renames. A partial file is never visible."]] },
+  { id: "scan", L: "idx", x: D, y: 30, w: 200, h: 80, t: "index/scan.rs", s: ["walkdir, no symlinks", "sorted by raw bytes"], file: "src/index/scan.rs",
+    what: "Recursively discovers supported images and snapshots the metadata used for change detection.",
+    rows: [["SearchRoot", "<code>filesystem_path</code> (canonical) for I/O and <code>display_path</code> (as you typed it) for output"], ["ImageFile", "<code>{relative_path, mtime_ns, size}</code>"], ["Order", "Sorted by native path bytes, the same order as SQLite BLOBs, so reconciliation is one merge walk"]] },
+  { id: "store", L: "idx", x: D, y: 160, w: 200, h: 110, t: "index/store.rs", s: ["ImageIndex · SQLite", ".visiongrep.db + .lock", "reconcile · stage · install"], file: "src/index/store.rs", algo: "algo-merge",
+    what: "The persistent embedding cache for one search root, guarded by an exclusive file lock.",
+    rows: [["Tables", "<code>images(path BLOB PK, mtime_ns, size, embedding BLOB[2048])</code> · <code>queries(query TEXT PK, embedding)</code> · <code>metadata(key, value)</code>"], ["Lock", "<code>&lt;db&gt;.lock</code>: try_lock, and if busy emit WaitingForIndex then block. Held through staging and install."], ["Reindex", "<code>stage()</code> builds <code>.visiongrep.db.reindex-*</code> beside the DB; <code>install()</code> runs <code>PRAGMA quick_check</code>, then renames"], ["Location", "<code>&lt;root&gt;/.visiongrep.db</code> or <code>--index-path</code> (hard links and lock paths rejected)"]] },
+  { id: "ingest", L: "idx", x: D, y: 330, w: 200, h: 96, t: "index/ingest.rs", s: ["256-image transactions", "8-image vision runs", "rayon ≤ 4 workers"], file: "src/index/ingest.rs", algo: "algo-batch",
+    what: "Embeds changed images and persists them, or for --no-cache returns them in memory with the same skip-versus-abort policy.",
+    rows: [["Skip", "Decode or size failures → ImageSkipped event; the row is deleted so it is not served stale"], ["Abort", "Inference, database or runtime errors"], ["Order", "Parallel preprocessing keeps input order and each file's own error"]] },
+  { id: "runtime", L: "mdl", x: D, y: 490, w: 200, h: 96, t: "model/runtime.rs", s: ["VisionSession.run_batch", "TextSession.run", "ONNX Runtime"], file: "src/model/runtime.rs",
+    what: "Typed wrappers around ort::Session; they own runtime resources and release them through RAII.",
+    rows: [["Vision", "<code>[N,3,256,256] f32</code> → N × 512"], ["Text", "Tokenized and padded to 77 ids with pad 0 → 1 × 512. The tokenizer loads on a scoped thread while the session builds."], ["Checks", "Output shape is validated before vectors leave"]] },
+  { id: "graphcache", L: "mdl", x: D, y: 650, w: 200, h: 90, t: "model/graph_cache.rs", s: ["models/optimized/<key>.onnx", "fail-open"], file: "src/model/graph_cache.rs", algo: "algo-graph",
+    what: "Saves ONNX Runtime's optimized graph so later processes skip the optimization pass.",
+    rows: [["Build", "Under a non-blocking lock: write <code>.building-*.onnx</code>, fsync, <code>persist_noclobber</code>"], ["Platforms", "Linux (from /proc/cpuinfo) and macOS (CPU features); elsewhere no cache"], ["Failure", "Always falls back to the source model"]] },
+  { id: "photos", L: "ext", x: E, y: 30, w: 190, h: 76, dashed: true, t: "Photo folder", s: ["JPEG PNG WebP BMP GIF", "TIFF · RAW · HEIC (mac)"],
+    what: "The directory you search. Only files with supported extensions are considered, matched case-insensitively. Symlinks are never followed.",
+    rows: [["RAW", "cr2 nef arw dng rw2 pef raf cr3, via the embedded JPEG preview"], ["HEIC", "heic heif hif, on macOS through ImageIO"]] },
+  { id: "decode", L: "emb", x: E, y: 160, w: 190, h: 96, t: "decode/", s: ["Standard · Raw · Heic", "size check before decode"], file: "src/decode/{mod,raw,heic_macos}.rs",
+    what: "Turns a file into an oriented DynamicImage, refusing to allocate for hostile or huge inputs.",
+    rows: [["Limits", "≤ 100 MP and ≤ 512 MiB estimated working memory, checked from the header"], ["RAW", "Walks TIFF/RAF/CR3 containers (capped IFDs and boxes) and picks the largest valid JPEG preview ≤ 64 MiB with short edge ≥ 256"], ["Frames", "First GIF frame, first TIFF page; EXIF orientation applied"]] },
+  { id: "embedding", L: "emb", x: E, y: 330, w: 190, h: 110, t: "embedding.rs", s: ["prepare_image → CHW", "embed_* → normalize", "NormalizedEmbedding"], file: "src/embedding.rs", algo: "algo-crop",
+    what: "The embedding boundary: every vector that leaves here is L2-normalized, and nothing else can construct one.",
+    rows: [["Preprocess", "RGB → short edge 256 (bicubic) → centre crop → (v/255 − mean)/std per channel"], ["Batch", "Concatenates prepared images into one Array4 and checks the result count"], ["Type", "<code>Box&lt;[f32; 512]&gt;</code>; 2048 LE bytes on disk"]] },
+  { id: "pillow", L: "emb", x: E, y: 490, w: 190, h: 80, t: "pillow_resize.rs", s: ["Pillow bicubic port", "22-bit fixed point"], file: "src/pillow_resize.rs", algo: "algo-crop",
+    what: "A faithful port of Pillow 12.3.0's Resample.c so embeddings match OpenCLIP's Python reference to within float noise.",
+    rows: [["Method", "Separable passes, horizontal then vertical; support 2.0; integer coefficients with 22 precision bits and half-up rounding"], ["Why", "The image crate's filters differ slightly, which shifts scores against golden vectors"]] },
+  { id: "hf", L: "ext", x: E, y: 650, w: 190, h: 90, dashed: true, t: "Hugging Face", s: ["pinned revisions", "~375 MB once"],
+    what: "Where the three artifacts are fetched on first use, over rustls HTTPS (reqwest blocking). After that VisionGrep works offline.",
+    rows: [["Repos", "udayjjw/visiongrep (INT8 vision), yurijmikhalevich/rclip-models (text), laion/CLIP-ViT-B-32-256x256-DataComp-s34B-b86K (tokenizer)"]] },
+];
+const byId = Object.fromEntries(N.map(n => [n.id, n]));
+
+// ---------- edges ----------
+const side = (n, s, f = .5) => s === "l" ? [n.x, n.y + n.h * f] : s === "r" ? [n.x + n.w, n.y + n.h * f] : s === "t" ? [n.x + n.w * f, n.y] : [n.x + n.w * f, n.y + n.h];
+function route(e) {
+  if (e.p) return e.p;
+  const a = byId[e.f], b = byId[e.t];
+  const p1 = side(a, e.fs, e.ff ?? .5), p2 = side(b, e.ts, e.tf ?? .5);
+  const horiz = s => s === "l" || s === "r";
+  if (horiz(e.fs) && horiz(e.ts)) {
+    if (Math.abs(p1[1] - p2[1]) < 1) return [p1, p2];
+    const mx = e.mx ?? (p1[0] + p2[0]) / 2; return [p1, [mx, p1[1]], [mx, p2[1]], p2];
+  }
+  if (!horiz(e.fs) && !horiz(e.ts)) {
+    if (Math.abs(p1[0] - p2[0]) < 1) return [p1, p2];
+    const my = e.my ?? (p1[1] + p2[1]) / 2; return [p1, [p1[0], my], [p2[0], my], p2];
+  }
+  return horiz(e.fs) ? [p1, [p2[0], p1[1]], p2] : [p1, [p1[0], p2[1]], p2];
+}
+const EDGES = [
+  { id: "call", f: "caller", t: "main", fs: "b", ts: "t", l: "runs" },
+  { id: "parse", f: "main", t: "args", fs: "b", ts: "t", l: "parse_cli" },
+  { id: "idx", f: "main", t: "indexCmd", p: [[30, 200], [14, 200], [14, 448], [30, 448]], l: "index DIR", lp: [72, 396] },
+  { id: "try", f: "main", t: "socketClient", fs: "r", ff: .25, ts: "l", tf: .6, mx: 258, l: "try server" , lp: [236, 150]},
+  { id: "idxsock", f: "indexCmd", t: "socketClient", p: [[230, 430], [242, 430], [242, 110], [290, 110]], l: "" },
+  { id: "sock", f: "socketClient", t: "socketServer", fs: "b", ts: "t", l: "JSON line ⇅ unix socket", lp: [395, 166] },
+  { id: "srvapp", f: "socketServer", t: "app", fs: "r", ff: .5, ts: "l", tf: .577, l: "per-connection thread", lp: [530, 236] },
+  { id: "inproc", f: "main", t: "app", p: [[230, 216], [264, 216], [264, 330], [540, 330], [540, 270], [560, 270]], l: "in-process", lp: [400, 322], dashed: true },
+  { id: "idxlocal", f: "indexCmd", t: "app", p: [[230, 468], [548, 468], [548, 286], [560, 286]], dashed: true, l: "fallback", lp: [395, 482] },
+  { id: "scan", f: "app", t: "scan", fs: "t", ff: .3, ts: "l", l: "discover_images", lp: [700, 60] },
+  { id: "walk", f: "scan", t: "photos", fs: "r", ff: .45, ts: "l", tf: .47, l: "" },
+  { id: "store", f: "app", t: "store", fs: "r", ff: .25, ts: "l", tf: .4, mx: 810, l: "open · reconcile", lp: [790, 190] },
+  { id: "ingest", f: "app", t: "ingest", fs: "r", ff: .7, ts: "l", tf: .3, mx: 822, l: "ingest missing", lp: [775, 286] },
+  { id: "ingstore", f: "ingest", t: "store", fs: "t", ts: "b", l: "commit /256", lp: [940, 304] },
+  { id: "ingemb", f: "ingest", t: "embedding", fs: "r", ff: .4, ts: "l", tf: .35, l: "prepare ×8", lp: [1060, 358] },
+  { id: "embdec", f: "embedding", t: "decode", fs: "t", ts: "b", l: "load_image", lp: [1175, 296] },
+  { id: "decphotos", f: "decode", t: "photos", fs: "t", ts: "b", l: "read", lp: [1175, 134], dashed: true },
+  { id: "embpil", f: "embedding", t: "pillow", fs: "b", ts: "t", l: "resize_rgb", lp: [1175, 468] },
+  { id: "ingmod", f: "ingest", t: "models", p: [[880, 426], [880, 462], [720, 462], [720, 490]], l: "with_vision", lp: [800, 455] },
+  { id: "modrt", f: "models", t: "runtime", fs: "r", ts: "l", l: "load", lp: [810, 530] },
+  { id: "modart", f: "models", t: "artifacts", fs: "b", ff: .5, ts: "t", l: "ensure_*", lp: [670, 620] },
+  { id: "arthf", f: "artifacts", t: "hf", p: [[780, 726], [808, 726], [808, 792], [1175, 792], [1175, 740]], l: "HTTPS download", lp: [990, 786] },
+  { id: "rtgc", f: "runtime", t: "graphcache", fs: "b", ts: "t", l: "load_session", lp: [940, 620] },
+  { id: "embrt", f: "embedding", t: "runtime", p: [[1080, 424], [1060, 424], [1060, 528], [1040, 528]], l: "run", lp: [1060, 480] },
+  { id: "query", f: "app", t: "query", fs: "b", ff: .5, ts: "t", l: "prepare", lp: [670, 322] },
+  { id: "qstore", f: "query", t: "store", p: [[780, 354], [798, 354], [798, 252], [840, 252]], l: "query cache", lp: [742, 250] },
+  { id: "qmod", f: "query", t: "models", fs: "b", ff: .3, ts: "t", tf: .3, l: "with_text", lp: [626, 462] },
+  { id: "rank", f: "query", t: "ranking", p: [[560, 405], [532, 405], [532, 645], [500, 645]], l: "rank", lp: [552, 620] },
+  { id: "out", f: "ranking", t: "terminal", fs: "l", ts: "r", tf: .47, l: "results", lp: [260, 630] },
+];
+const edgeById = Object.fromEntries(EDGES.map(e => [e.id, e]));
+
+// ---------- pathways ----------
+const P = [
+  { id: "warm", name: "Text search, warm", cmd: 'visiongrep "a dog on a beach" ./photos', steps: [
+    ["call", "clap parses a text query with top 5 and threshold 0.25."],
+    ["try", "It uses the cache with fast verification, so main tries the shared server first."],
+    ["sock", "The client connects to cache/run/<hash>.sock and writes one JSON line with root and index as raw bytes."],
+    ["srvapp", "A connection thread runs search_with_models with the server's long-lived Models."],
+    ["store", "ImageIndex::open takes .visiongrep.db.lock and checks schema v3, the stored root and both contracts."],
+    ["scan", "discover_images walks the folder (no symlinks) and sorts entries by path bytes."],
+    [null, "plan_reconciliation merge-walks discovery against the cache. Nothing changed, so there is nothing to embed.", ["store"]],
+    ["query", "all_embeddings loads every cached vector, then Query::prepare runs."],
+    ["qstore", "The exact text is in the queries table. Cache hit, so no model is loaded."],
+    ["rank", "Ranker dots the query with every image and keeps the top 5 in a bounded heap."],
+    ["out", "Results return over the socket and Terminal writes score⇥path. Exit 0, or 1 if nothing passed 0.25."],
+  ]},
+  { id: "cold", name: "First run ever", cmd: 'visiongrep "a dog on a beach" ./photos   # empty cache', steps: [
+    ["call", "No models, no index, no server yet."],
+    ["try", "connect fails with no listener, so the client spawns `visiongrep server run` and polls for up to 2 s."],
+    ["sock", "The new server binds the socket and accepts. Its text preload does nothing because the artifacts aren't verified yet."],
+    ["srvapp", "search_with_models runs on a connection thread."],
+    ["store", "The lock is taken and .visiongrep.db is created with tables and metadata."],
+    ["scan", "Every image is discovered."],
+    ["ingest", "Every file is missing, so all of them are ingested."],
+    ["ingmod", "start_ingestion loads the vision session before reporting progress."],
+    ["modart", "There is no manifest or file, so the vision artifact must be downloaded."],
+    ["arthf", "It streams to a temp file and is checked for size and SHA-256, then renamed. Download events stream to your stderr."],
+    ["modrt", "VisionSession::load."],
+    ["rtgc", "There is no optimized graph yet. Under the build lock, ORT optimizes and saves models/optimized/<key>.onnx."],
+    ["ingemb", "8 files at a time are decoded and preprocessed by up to 4 rayon workers."],
+    ["embdec", "decode checks size limits, applies EXIF orientation, and reads RAW and HEIC through their own decoders."],
+    ["embpil", "Pillow-exact bicubic resize to a 256 short edge, centre crop, then CLIP normalization."],
+    ["embrt", "One run_batch per 8 images; each output is L2-normalized."],
+    ["ingstore", "Every 256 images, one transaction upserts rows. A crash loses at most this batch."],
+    ["query", "The candidate vectors are ready, so the query is prepared."],
+    ["qmod", "Cache miss → with_text: download text model and tokenizer, load the tokenizer on a thread while ORT builds."],
+    ["qstore", "The text embedding is upserted, so repeating this query needs no model at all."],
+    ["rank", "Dot products, threshold, top-K."],
+    ["out", "Results go to stdout. The server stays alive, holding both sessions, for 10 idle minutes."],
+  ]},
+  { id: "image", name: "Image query", cmd: "visiongrep --image ./photos/beach/dog.jpg ./photos", steps: [
+    ["call", "--image gives Query::Image(PathBuf)."],
+    ["try", "The client canonicalizes the image path first, so a relative path still works on the server."],
+    ["sock", "The query travels as SocketQuery::Image(absolute path bytes)."],
+    ["srvapp", "search_with_models."],
+    ["store", "Open, take the lock, reconcile as usual."],
+    ["query", "Query::resolve checks the image is a regular file and opens it once. Opening a pipe could block forever."],
+    [null, "take_query_image: the reference is inside the corpus, so its cached vector is reused and swap_removed from candidates. It can't match itself.", ["query"]],
+    ["qmod", "If it is outside the corpus: prepare_image and with_vision. The vector is transient and never stored."],
+    ["rank", "Rank the remaining images."],
+    ["out", "The query image itself never appears in the results."],
+  ]},
+  { id: "index", name: "visiongrep index", cmd: "visiongrep index ./photos", steps: [
+    ["idx", "The index subcommand. Nothing will be written to stdout."],
+    ["idxsock", "try_index sends Request::Index(target) to the shared server, starting it if needed."],
+    ["sock", "Progress events stream back and Terminal draws them on stderr."],
+    ["srvapp", "The server calls prepare_index."],
+    ["store", "Open and reconcile."],
+    ["scan", "Discover."],
+    ["ingest", "Embed new and changed images."],
+    ["ingstore", "Commit every 256 images, so an interrupted run resumes."],
+    [null, "prepare_index also runs models.with_text, so the text model is downloaded, verified and graph-optimized now. The first real search only embeds its query.", ["models", "runtime", "graphcache"]],
+    ["idxlocal", "If the server can't be reached: the same prepare_index runs in-process."],
+    [null, "stderr: \"Indexed N images in ./photos; searches are ready\". Exit 0.", ["terminal"]],
+  ]},
+  { id: "reindex", name: "--reindex", cmd: 'visiongrep "sunset" ./photos --reindex', steps: [
+    ["call", "CacheMode::Reindex. Allowed through the server."],
+    ["sock", "Sent with reindex: true."],
+    ["srvapp", "search_cached sees Reindex."],
+    [null, "stage() closes the active DB but keeps its lock, then creates .visiongrep.db.reindex-* beside it. Other requests on this index wait.", ["store"]],
+    ["ingest", "Every discovered file is ingested into the staged DB."],
+    ["ingemb", "Same decode → preprocess → infer pipeline."],
+    ["ingstore", "Batches are written to the staged DB only."],
+    ["query", "The query runs against the staged DB."],
+    ["rank", "Ranked as usual."],
+    [null, "install(): PRAGMA quick_check, then an atomic rename over the active DB. On any error the staged file is dropped and the old index is unchanged.", ["store"]],
+    ["out", "Results printed."],
+  ]},
+  { id: "nocache", name: "--no-cache", cmd: 'visiongrep "sunset" ./photos --no-cache', steps: [
+    ["call", "CacheMode::Disabled, so can_use_server() is false."],
+    ["inproc", "search_with_models runs inside this process with Models::new (Search lifetime)."],
+    ["scan", "Discover every image."],
+    ["ingest", "embed_images: same skip/abort policy, but the results stay in memory."],
+    ["ingemb", "Decode and preprocess 8 at a time."],
+    ["embrt", "Vision inference and normalization."],
+    ["query", "No index is passed, so there is no query cache."],
+    ["qmod", "with_text drops the vision session first, so both are never held at once."],
+    ["rank", "Rank."],
+    ["out", "Print. Nothing was written to disk except model artifacts."],
+  ]},
+];
+
+// ---------- render map ----------
+const svg = document.getElementById("map");
+const defs = el("defs", {}, svg);
+for (const k in L) {
+  const pat = el("pattern", { id: "hatch-" + k, width: 7, height: 7, patternUnits: "userSpaceOnUse", patternTransform: "rotate(-38)" }, defs);
+  el("rect", { width: 7, height: 7, style: `fill:${L[k].bg}` }, pat);
+  el("line", { x1: 0, y1: 0, x2: 0, y2: 7, style: `stroke:${L[k].c};stroke-width:1;opacity:.16` }, pat);
+}
+const gEdges = el("g", {}, svg), gNodes = el("g", {}, svg), gBadges = el("g", {}, svg);
+const edgeEls = {}, nodeEls = {};
+EDGES.forEach((e, i) => {
+  const pts = route(e);
+  e.pts = pts;
+  const g = el("g", { class: "edge" + (e.dashed ? " dashed" : "") }, gEdges);
+  el("path", { class: "ln", d: sketchPath(pts, 900 + i * 13) }, g);
+  el("path", { d: arrowHead(pts) }, g);
+  if (e.l) {
+    const [lx, ly] = e.lp ?? midpoint(pts);
+    el("text", { x: lx, y: ly, "text-anchor": "middle" }, g).textContent = e.l;
+  }
+  edgeEls[e.id] = g;
+});
+N.forEach((n, i) => {
+  const lay = L[n.L];
+  const g = el("g", { class: "node", tabindex: 0, role: "button", "aria-label": n.t }, gNodes);
+  el("rect", { x: n.x, y: n.y, width: n.w, height: n.h, rx: 6, style: `fill:url(#hatch-${n.L})` }, g);
+  el("path", { class: "outline", d: sketchRect(n.x, n.y, n.w, n.h, 40 + i * 7), style: `fill:none;stroke:${lay.c};stroke-width:1.7;stroke-linecap:round${n.dashed ? ";stroke-dasharray:6 5" : ""}` }, g);
+  el("text", { class: "title", x: n.x + 12, y: n.y + 27 }, g).textContent = n.t;
+  n.s.forEach((s, k) => { el("text", { class: "sub", x: n.x + 12, y: n.y + 47 + k * 16 }, g).textContent = s; });
+  g.addEventListener("click", () => select(n.id));
+  g.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(n.id); } });
+  nodeEls[n.id] = g;
+});
+
+// legend
+const legend = document.getElementById("legend");
+let layerFilter = null;
+for (const k in L) {
+  const b = h("button", null, `<i style="border-color:${L[k].c};background:${L[k].bg}"></i>${L[k].name}`);
+  b.setAttribute("aria-pressed", "false");
+  b.addEventListener("click", () => { layerFilter = layerFilter === k ? null : k; [...legend.children].forEach(c => c.setAttribute("aria-pressed", String(c === b && layerFilter === k))); paint(); });
+  legend.appendChild(b);
+}
+
+// ---------- state ----------
+const panel = document.getElementById("panel");
+let path = null, stepIdx = -1, selected = null;
+const pathsBar = document.getElementById("paths");
+const allBtn = h("button", "chip", "Whole map");
+allBtn.setAttribute("aria-pressed", "true");
+allBtn.addEventListener("click", () => setPath(null));
+pathsBar.appendChild(allBtn);
+P.forEach(p => {
+  const b = h("button", "chip", `${p.name} <small>${p.steps.length}</small>`);
+  b.dataset.p = p.id; b.setAttribute("aria-pressed", "false");
+  b.addEventListener("click", () => setPath(p.id));
+  pathsBar.appendChild(b);
+});
+
+function pathSets(p) {
+  const nodes = new Set(), edges = new Set();
+  p.steps.forEach(([eid, , extra]) => {
+    if (eid) { const e = edgeById[eid]; edges.add(eid); nodes.add(e.f); nodes.add(e.t); }
+    (extra || []).forEach(n => nodes.add(n));
+  });
+  return { nodes, edges };
+}
+function paint() {
+  gBadges.replaceChildren();
+  const p = P.find(q => q.id === path);
+  const sets = p ? pathSets(p) : null;
+  const cur = p && stepIdx >= 0 ? p.steps[stepIdx] : null;
+  for (const id in nodeEls) {
+    let dim = false;
+    if (sets) dim = !sets.nodes.has(id);
+    if (layerFilter) dim = byId[id].L !== layerFilter;
+    nodeEls[id].classList.toggle("dim", dim);
+    nodeEls[id].classList.toggle("sel", id === selected || !!(cur && cur[2] && cur[2].includes(id)));
+  }
+  for (const id in edgeEls) {
+    const e = edgeById[id];
+    let dim = false;
+    if (sets) dim = !sets.edges.has(id);
+    if (layerFilter) dim = byId[e.f].L !== layerFilter && byId[e.t].L !== layerFilter;
+    edgeEls[id].classList.toggle("dim", dim);
+    edgeEls[id].classList.toggle("on", !!sets && sets.edges.has(id));
+    edgeEls[id].classList.toggle("focus", !!cur && cur[0] === id);
+  }
+  if (!p) return;
+  // one badge per step; repeated edges get stacked badges
+  const seen = {};
+  p.steps.forEach(([eid, , extra], i) => {
+    let x, y;
+    if (eid) { const e = edgeById[eid]; [x, y] = e.bp ?? midpoint(e.pts); }
+    else { const n = byId[extra[0]]; x = n.x + n.w - 4; y = n.y + 4; }
+    const key = `${Math.round(x)},${Math.round(y)}`; const k = seen[key] = (seen[key] ?? -1) + 1;
+    x += k * 22;
+    const g = el("g", { class: "badge" + (cur && i === stepIdx ? " focus" : "") + (stepIdx >= 0 && i !== stepIdx ? " dim" : "") }, gBadges);
+    el("circle", { cx: x, cy: y, r: 10 }, g);
+    el("text", { x, y }, g).textContent = i + 1;
+    g.style.cursor = "pointer";
+    g.addEventListener("click", () => { stepIdx = i; paint(); renderPathPanel(); });
+  });
+}
+
+function setPath(id) {
+  path = id; stepIdx = -1; selected = null;
+  [...pathsBar.children].forEach(b => b.setAttribute("aria-pressed", String((b.dataset.p ?? null) === id)));
+  paint();
+  if (id) renderPathPanel(); else renderIntro();
+}
+
+function renderIntro() {
+  panel.innerHTML = `<span class="tag" style="color:var(--hl);border-color:var(--hl)">How to read this</span>
+  <h3>Start anywhere</h3>
+  <p class="what">Click a box to see what the module owns. Pick a pathway above to trace one command; step through it with the list, the arrow keys or the numbered badges.</p>
+  <dl>
+    <dt>The shape of it</dt><dd>A thin CLI hands off to a shared background server. One orchestration layer drives the SQLite index, lazy CLIP sessions and a ranker. Each search re-discovers the folder and embeds only what changed.</dd>
+    <dt>Fastest path</dt><dd>A repeated text query on a warm server loads no model: the query vector comes from SQLite and ranking is a pass of dot products. It takes a few milliseconds.</dd>
+    <dt>Slowest path</dt><dd>The first run: about 375 MB of downloads, graph optimization, then 8-image vision batches.</dd>
+  </dl>
+  <p class="hint" style="margin-top:12px">Tip: click a layer in the legend to focus it.</p>`;
+}
+
+function renderPathPanel() {
+  const p = P.find(q => q.id === path);
+  panel.innerHTML = "";
+  panel.appendChild(h("span", "tag", "Pathway")).style.cssText = "color:var(--hl);border-color:var(--hl)";
+  panel.appendChild(h("h3", null, p.name));
+  const cmd = h("div", "cmd"); cmd.textContent = p.cmd; panel.appendChild(cmd);
+  const ctl = h("div", "stepctl");
+  const prev = h("button", "btn", "← Prev"), next = h("button", "btn primary", stepIdx < 0 ? "Start →" : "Next →"), all = h("button", "btn", "Show all");
+  prev.disabled = stepIdx <= 0; next.disabled = stepIdx >= p.steps.length - 1;
+  prev.onclick = () => go(-1); next.onclick = () => go(1); all.onclick = () => { stepIdx = -1; paint(); renderPathPanel(); };
+  ctl.append(prev, next, all); panel.appendChild(ctl);
+  const ol = h("ol", "steps");
+  p.steps.forEach(([eid, text], i) => {
+    const li = h("li", i === stepIdx ? "cur" : "", `<b>${i + 1}</b><span>${esc(text)}</span>`);
+    li.onclick = () => { stepIdx = i; paint(); renderPathPanel(); };
+    ol.appendChild(li);
+  });
+  panel.appendChild(ol);
+  const cur = ol.querySelector(".cur"); if (cur) cur.scrollIntoView({ block: "nearest" });
+}
+function go(d) { const p = P.find(q => q.id === path); if (!p) return; stepIdx = Math.max(0, Math.min(p.steps.length - 1, stepIdx + d)); paint(); renderPathPanel(); }
+document.addEventListener("keydown", ev => {
+  if (!path || ev.target.closest("input")) return;
+  if (ev.key === "ArrowRight") { ev.preventDefault(); go(1); }
+  if (ev.key === "ArrowLeft") { ev.preventDefault(); go(-1); }
+});
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+function select(id) {
+  selected = id; paint();
+  const n = byId[id], lay = L[n.L];
+  panel.innerHTML = `<span class="tag" style="color:${lay.c};border-color:${lay.c}">${lay.name}</span>
+  <h3>${n.t}</h3>${n.file ? `<p class="file">${n.file}</p>` : ""}
+  <p class="what">${n.what}</p>
+  <dl>${n.rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+  ${n.algo ? `<a class="jump" href="#${n.algo}">See the algorithm ↓</a>` : ""}
+  ${path ? `<div class="stepctl"><button class="btn" id="backPath">← Back to pathway</button></div>` : ""}`;
+  const back = document.getElementById("backPath"); if (back) back.onclick = () => { selected = null; paint(); renderPathPanel(); };
+}
+
+renderIntro();
+setPath("warm");
+
+// ================= ALGORITHM WIDGETS =================
+
+// --- merge walk ---
+(() => {
+  const disc = [["beach/dog.jpg", "5·812"], ["beach/sea.jpg", "9·640"], ["city/night.png", "3·2201"], ["park/kid.webp", "7·377"]];
+  const cache = [["beach/dog.jpg", "5·812"], ["beach/old.jpg", "2·530"], ["city/night.png", "1·2201"], ["zoo/cat.jpg", "4·999"]];
+  let i, j, missing, stale, msg, done;
+  const reset = () => { i = 0; j = 0; missing = []; stale = []; done = false; msg = "Both lists arrive sorted by raw bytes. Pointers start at the top."; draw(); };
+  function step() {
+    if (done) return;
+    if (i < disc.length && j < cache.length) {
+      const a = disc[i][0], b = cache[j][0];
+      if (a < b) { missing.push(a); msg = `<b>Less</b>: ${a} isn't cached yet → missing. Advance discovery.`; i++; }
+      else if (a > b) { stale.push(b); msg = `<b>Greater</b>: ${b} is cached but no longer on disk → stale. Advance cache.`; j++; }
+      else if (disc[i][1] !== cache[j][1]) { missing.push(a); msg = `<b>Equal</b>, but (mtime, size) changed ${cache[j][1]} → ${disc[i][1]} → re-embed. Advance both.`; i++; j++; }
+      else { msg = `<b>Equal</b> with identical (mtime, size) → keep the cached vector. Advance both.`; i++; j++; }
+      return draw();
+    }
+    const restM = disc.slice(i).map(d => d[0]), restS = cache.slice(j).map(c => c[0]);
+    missing.push(...restM); stale.push(...restS); i = disc.length; j = cache.length; done = true;
+    msg = `One list is exhausted. Leftover discovered → missing (${restM.join(", ") || "none"}); leftover cached → stale (${restS.join(", ") || "none"}). The stale rows are deleted in one transaction.`;
+    draw();
+  }
+  function col(title, list, ptr) { return `<div><h4>${title}</h4>${list.map((x, k) => `<div class="it ${k === ptr && !done ? "ptr" : ""} ${k < ptr ? "done" : ""}"><span>${x[0]}</span><span>${x[1]}</span></div>`).join("")}</div>`; }
+  function draw() {
+    document.getElementById("mw").innerHTML = col("discovered (disk)", disc, i) + col("cached (SQLite)", cache, j);
+    document.getElementById("mwv").innerHTML = msg;
+    document.getElementById("mwm").textContent = missing.join(", ") || "—";
+    document.getElementById("mws").textContent = stale.join(", ") || "—";
+  }
+  document.getElementById("mwStep").onclick = step;
+  document.getElementById("mwAll").onclick = () => { while (!done) step(); };
+  document.getElementById("mwReset").onclick = reset;
+  reset();
+})();
+
+// --- top-K heap ---
+(() => {
+  const imgs = [["beach/dog.jpg", .341], ["beach/dog-2.jpg", .312], ["park/labrador.jpg", .297], ["beach/sea.jpg", .268], ["a/puppy.png", .254], ["b/puppy.png", .254], ["city/cat.webp", .231], ["zoo/wolf.jpg", .219], ["food/pizza.jpg", .142], ["docs/receipt.png", .088], ["sky/clouds.tif", .061], ["raw/IMG_0042.cr3", -.034]];
+  const thr = document.getElementById("thr"), top = document.getElementById("topk");
+  function draw() {
+    const t = +thr.value, k = +top.value;
+    document.getElementById("thrv").textContent = t.toFixed(2); document.getElementById("topv").textContent = k;
+    const passed = imgs.filter(x => x[1] >= t).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+    const kept = new Set(passed.slice(0, k).map(x => x[0]));
+    const lo = -.1, hi = .4, pct = v => Math.max(0, Math.min(100, (v - lo) / (hi - lo) * 100));
+    document.getElementById("heap").innerHTML = imgs.map(([p, s]) => {
+      const st = kept.has(p) ? "kept" : s >= t ? "evicted" : "cut";
+      return `<div class="r ${st === "kept" ? "kept" : st === "cut" ? "cut" : ""}"><span>${p}</span><span class="bar"><i style="width:${pct(s)}%"></i><span class="thr" style="left:${pct(t)}%"></span></span><span class="tabular">${s.toFixed(3)}</span><span class="st">${st === "kept" ? "top-" + k : st === "evicted" ? "popped" : "< t"}</span></div>`;
+    }).join("");
+    const res = passed.slice(0, k);
+    const root = res.length ? res[res.length - 1] : null;
+    document.getElementById("heapout").innerHTML = res.length
+      ? `heap root (worst kept) = ${root[0]} @ ${root[1].toFixed(3)}<br>${passed.length - res.length} passed the threshold but were popped · exit 0<br>tie: a/puppy.png sorts before b/puppy.png at 0.254`
+      : `no image scores ≥ ${t.toFixed(2)} → empty result → exit code 1`;
+  }
+  thr.oninput = draw; top.oninput = draw; draw();
+})();
+
+// --- resize & crop ---
+(() => {
+  const S = 256, w = document.getElementById("cw"), hh = document.getElementById("ch");
+  const rhe = (floor, num) => (num % 2 === 0 || floor % 2 === 0) ? floor : floor + 1;
+  function draw() {
+    const W = Math.floor(+w.value), H = Math.floor(+hh.value);
+    const out = document.getElementById("cropout"), sv = document.getElementById("cropsvg");
+    sv.replaceChildren();
+    if (!(W > 0 && H > 0)) { out.textContent = "InvalidDimensions: width and height must be non-zero → image skipped"; return; }
+    if (W * H > 100e6) { out.textContent = `${(W * H / 1e6).toFixed(1)} MP > 100 MP → ImagePreparationError::TooLarge, rejected from the header before any pixels are decoded (image skipped, not fatal)`; return; }
+    const [rw, rh] = W < H ? [S, Math.min(Math.floor(H * S / W), 4294967295)] : [Math.min(Math.floor(W * S / H), 4294967295), S];
+    const left = rhe(Math.floor((rw - S) / 2), rw - S), topo = rhe(Math.floor((rh - S) / 2), rh - S);
+    out.innerHTML = `original ${W}×${H} → resized ${rw}×${rh} (short edge 256)<br>crop offset (left ${left}, top ${topo}) → 256×256 → tensor [3,256,256] f32 = 786,432 B<br>per channel: (v/255 − mean) / std, mean = [0.4815, 0.4578, 0.4082]`;
+    // draw: original scaled into 240x180, resized+crop box beside it
+    const box = (x, y, bw, bh, style, label) => { el("rect", { x, y, width: bw, height: bh, rx: 3, style }, sv); if (label) el("text", { x: x, y: y - 6, style: "font:600 15px var(--hand);fill:var(--muted)" }, sv).textContent = label; };
+    const sc = Math.min(220 / W, 160 / H), ow = W * sc, oh = H * sc;
+    box(10, 30, ow, oh, "fill:var(--ext-bg);stroke:var(--edge);stroke-width:1.5", "original");
+    const sc2 = Math.min(220 / rw, 160 / rh), rw2 = rw * sc2, rh2 = rh * sc2, x0 = 300;
+    box(x0, 30, rw2, rh2, "fill:var(--emb-bg);stroke:var(--emb);stroke-width:1.5", "resized");
+    box(x0 + left * sc2, 30 + topo * sc2, S * sc2, S * sc2, "fill:none;stroke:var(--hl);stroke-width:2.5;stroke-dasharray:5 4", null);
+    el("text", { x: x0 + left * sc2 + 4, y: 30 + topo * sc2 + 16, style: "font:600 12px var(--sans);fill:var(--hl)" }, sv).textContent = "256²";
+    el("path", { d: "M245 110 Q270 100 292 110", style: "fill:none;stroke:var(--edge);stroke-width:1.5" }, sv);
+    el("path", { d: "M284 104 L292 110 L283 115", style: "fill:none;stroke:var(--edge);stroke-width:1.5" }, sv);
+  }
+  w.oninput = draw; hh.oninput = draw;
+  document.querySelectorAll("[data-wh]").forEach(b => b.onclick = () => { const [a, c] = b.dataset.wh.split(","); w.value = a; hh.value = c; draw(); });
+  draw();
+})();
+
+// --- batching ---
+(() => {
+  const n = document.getElementById("bn"), c = document.getElementById("bc");
+  function draw() {
+    const N_ = +n.value, cores = +c.value;
+    document.getElementById("bnv").textContent = N_; document.getElementById("bcv").textContent = cores;
+    const workers = Math.max(1, Math.min(cores, 4, N_));
+    const txs = Math.ceil(N_ / 256);
+    let runs = 0; for (let k = 0; k < txs; k++) runs += Math.ceil(Math.min(256, N_ - k * 256) / 8);
+    const sv = document.getElementById("batchsvg"); sv.replaceChildren();
+    const unit = 540 / Math.max(N_, 256);
+    for (let k = 0; k < txs; k++) {
+      const size = Math.min(256, N_ - k * 256), x = 10 + k * 256 * unit, bw = size * unit;
+      el("rect", { x, y: 30, width: Math.max(bw - 3, 1), height: 44, rx: 4, style: "fill:var(--idx-bg);stroke:var(--idx);stroke-width:1.5" }, sv);
+      if (bw > 40) el("text", { x: x + 6, y: 22, style: "font:600 14px var(--hand);fill:var(--muted)" }, sv).textContent = `tx ${k + 1} · ${size}`;
+      if (8 * unit >= 3) for (let r = 8; r < size; r += 8) el("line", { x1: x + r * unit, x2: x + r * unit, y1: 34, y2: 70, style: "stroke:var(--idx);stroke-width:.7;opacity:.5" }, sv);
+    }
+    el("text", { x: 10, y: 100, style: "font:500 11.5px var(--mono);fill:var(--faint)" }, sv).textContent = "each tick = one 8-image ORT run · each box = one SQLite transaction";
+    document.getElementById("batchout").innerHTML = `${txs} transaction${txs > 1 ? "s" : ""} · ${runs} vision runs · ${workers} preprocessing worker${workers > 1 ? "s" : ""} (min(cores, 4, files))<br>if killed mid-run, at most ${Math.min(256, N_)} images are redone on the next run`;
+  }
+  n.oninput = draw; c.oninput = draw; draw();
+})();
+
+// --- ladders ---
+function ladder(btnId, ladId, rungs, scenarios) {
+  const btns = document.getElementById(btnId), lad = document.getElementById(ladId);
+  let cur = 0;
+  function draw() {
+    [...btns.children].forEach((b, k) => b.setAttribute("aria-pressed", String(k === cur)));
+    const on = new Set(scenarios[cur].on);
+    lad.innerHTML = rungs.map((r, k) => `<div class="${on.has(k) ? "on" : ""} ${r.end ? "end" : ""}">${r.t}${r.s ? `<small>${r.s}</small>` : ""}</div>`).join("");
+  }
+  scenarios.forEach((s, k) => { const b = h("button", "chip", s.name); b.onclick = () => { cur = k; draw(); }; btns.appendChild(b); });
+  draw();
+}
+ladder("artBtns", "artLadder", [
+  { t: "Fast mode and <code>&lt;file&gt;.verified.json</code> matches the file's identity?", s: "manifest v1 · binds revision, sha256 and size to the installed file" },
+  { t: "✓ Use it. No hashing.", end: true },
+  { t: "File exists, size matches and SHA-256 matches?", s: "streams the whole file through sha2" },
+  { t: "✓ Write a fresh manifest and use it.", end: true },
+  { t: "Download: Content-Length must equal the expected size, then stream to a sibling temp file while hashing", s: "reqwest blocking + rustls · 64 KiB buffer · progress events to stderr" },
+  { t: "Size and hash match → rename over the destination → write manifest", s: "on failure the temp file is dropped; any previously installed file stays", end: true },
+], [
+  { name: "Warm cache", on: [0, 1] },
+  { name: "Copied in, no manifest", on: [0, 2, 3] },
+  { name: "--verify-models", on: [2, 3] },
+  { name: "Missing or corrupt", on: [0, 2, 4, 5] },
+]);
+ladder("gcBtns", "gcLadder", [
+  { t: "Platform identifiable? (Linux /proc/cpuinfo, macOS CPU features)", s: "otherwise there is no cache key" },
+  { t: "Load <code>optimized/&lt;sha256 key&gt;.onnx</code> if it exists and loads cleanly", end: true },
+  { t: "<code>try_lock</code> on <code>&lt;key&gt;.lock</code>, then re-check for a graph another process just finished", s: "non-blocking: never waits for another builder" },
+  { t: "Level-3 optimize → write <code>.building-*.onnx</code> → fsync → persist_noclobber", s: "the session built here is used directly", end: true },
+  { t: "Fall back: load the verified source model", s: "a filesystem error, a corrupt cache file or a busy lock never fails the search", end: true },
+], [
+  { name: "Cached graph", on: [0, 1] },
+  { name: "First load", on: [0, 2, 3] },
+  { name: "Another process building", on: [0, 2, 4] },
+  { name: "Unsupported platform", on: [0, 4] },
+]);
+
+// --- lifetimes ---
+(() => {
+  const btns = document.getElementById("lifeBtns"), lanes = document.getElementById("lanes"), note = document.getElementById("lifeNote");
+  const modes = [
+    { name: "One-shot search (Search)", rows: [["vision", [[0, 52, "VisionSession · ingest 8-batches", "mdl"]]], ["text", [[54, 100, "TextSession", "mdl"]]], ["work", [[0, 52, "embed changed images", "idx"], [54, 86, "embed query", "app"], [87, 100, "rank", "emb"]]]],
+      note: "with_text sets the vision slot to None before taking the text lock, so the process never holds both sessions (≈120 MB INT8 and ≈254 MB FP32 of weights, plus ORT arenas)." },
+    { name: "Shared server (Process)", rows: [["vision", [[22, 100, "VisionSession · kept warm", "mdl"]]], ["text", [[0, 100, "TextSession · preloaded at start", "mdl"]]], ["work", [[0, 20, "idle", "ext"], [22, 50, "req A: index photos/", "idx"], [52, 66, "req B", "app"], [68, 82, "req C", "app"], [84, 100, "idle → exit at 10 min", "ext"]]]],
+      note: "The server holds both sessions (about 400–600 MiB) so later requests from any folder skip model load. Two requests on the same index queue on its file lock; different folders run in parallel." },
+  ];
+  let cur = 0;
+  function draw() {
+    [...btns.children].forEach((b, k) => b.setAttribute("aria-pressed", String(k === cur)));
+    lanes.innerHTML = modes[cur].rows.map(([name, segs]) => `<div class="lane"><span>${name}</span><div class="track">${segs.map(([a, b, t, k]) => `<span class="seg" style="left:${a}%;width:${b - a}%;background:var(--${k}-bg);border-color:var(--${k});color:var(--ink)" title="${t}">${t}</span>`).join("")}</div></div>`).join("");
+    note.textContent = modes[cur].note;
+  }
+  modes.forEach((m, k) => { const b = h("button", "chip", m.name); b.onclick = () => { cur = k; draw(); }; btns.appendChild(b); });
+  draw();
+})();
+})();
+</script>

@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
+use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 
 use super::terminal::OutputFormat;
 use crate::application::{CacheMode, Query, SearchRequest};
@@ -109,21 +109,6 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Subcommands {
-    /// Serve shared socket requests or a directory's JSONL searches
-    Serve {
-        #[command(flatten)]
-        mode: ServeModeArgs,
-        #[arg(
-            long,
-            value_name = "PATH",
-            requires = "stdio",
-            help = "Store the index at PATH"
-        )]
-        index_path: Option<PathBuf>,
-        /// Directory to search recursively
-        #[arg(required_if_eq("stdio", "true"), conflicts_with = "socket")]
-        path: Option<PathBuf>,
-    },
     /// Index a directory and prepare both models without searching
     Index {
         #[arg(long, value_name = "PATH", help = "Store the index at PATH")]
@@ -142,36 +127,10 @@ pub(crate) enum Subcommands {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ServerAction {
+    /// Run the shared server in the foreground
+    Run,
     /// Ask the shared server to finish active requests and shut down
     Stop,
-}
-
-#[derive(Debug, Args)]
-#[group(required = true, multiple = false)]
-pub(crate) struct ServeModeArgs {
-    #[arg(long, help = "Read JSONL from stdin and write JSONL to stdout")]
-    stdio: bool,
-    #[arg(
-        long,
-        conflicts_with = "no_server",
-        help = "Listen for local CLI requests on a Unix socket"
-    )]
-    socket: bool,
-}
-
-pub(crate) enum ServeMode {
-    Stdio,
-    Socket,
-}
-
-impl ServeModeArgs {
-    pub(crate) fn mode(&self) -> ServeMode {
-        if self.stdio {
-            ServeMode::Stdio
-        } else {
-            ServeMode::Socket
-        }
-    }
 }
 
 pub(crate) struct Command {
@@ -201,13 +160,13 @@ impl Cli {
             && matches!(
                 cli.subcommand,
                 Some(Subcommands::Server {
-                    action: ServerAction::Stop
+                    action: ServerAction::Run | ServerAction::Stop
                 })
             )
         {
             return Err(Self::command().error(
                 ErrorKind::ArgumentConflict,
-                "--no-server cannot be used with server stop",
+                "--no-server cannot be used with server commands",
             ));
         }
         Ok(cli)
@@ -311,31 +270,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serve_requires_stdio_and_a_directory() {
-        let cli = Cli::try_parse_from([
-            "visiongrep",
-            "serve",
-            "--stdio",
-            "--index-path",
-            "photos.db",
-            "photos",
-        ])
-        .unwrap();
+    fn server_run_takes_no_arguments() {
+        let cli =
+            Cli::parse_args(["visiongrep", "server", "run"].map(OsString::from).to_vec()).unwrap();
         assert!(matches!(
             cli.subcommand,
-            Some(Subcommands::Serve {
-                mode: ServeModeArgs { stdio: true, .. },
-                ..
+            Some(Subcommands::Server {
+                action: ServerAction::Run
             })
         ));
-        for args in [
-            vec!["visiongrep", "serve", "photos"],
-            vec!["visiongrep", "serve", "--stdio"],
-            vec!["visiongrep", "serve", "--stdio", "photos", "--no-cache"],
-            vec!["visiongrep", "serve", "--stdio", "--socket", "photos"],
-        ] {
-            assert!(Cli::try_parse_from(args).is_err());
-        }
+        assert!(Cli::try_parse_from(["visiongrep", "server", "run", "photos"]).is_err());
+        let args = ["visiongrep", "--no-server", "server", "run"];
+        let error = Cli::parse_args(args.map(OsString::from).to_vec()).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -371,8 +318,8 @@ mod tests {
 
     #[test]
     fn subcommand_name_can_still_be_a_literal_query() {
-        let cli = Cli::try_parse_from(["visiongrep", "--top", "5", "serve", "photos"]).unwrap();
-        assert_eq!(cli.query.as_deref(), Some("serve"));
+        let cli = Cli::try_parse_from(["visiongrep", "--top", "5", "server", "photos"]).unwrap();
+        assert_eq!(cli.query.as_deref(), Some("server"));
         assert!(cli.subcommand.is_none());
         let cli = Cli::try_parse_from(["visiongrep", "--top", "5", "index", "photos"]).unwrap();
         assert_eq!(cli.query.as_deref(), Some("index"));

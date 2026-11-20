@@ -101,7 +101,6 @@ Tests of internal Rust APIs use the production types directly; these E2Es test t
 | Ingestion batches | Nine valid images cross the vision batch boundary with and without cache; 257 files cross the database batch boundary with only two valid images requiring inference |
 | Unavailable download | Exit 2, empty stdout, no partial artifacts or cached embeddings |
 | Timing output | Timing JSON on stderr preserves result JSON on stdout; invalid timing destinations return exit 2 |
-| Persistent stdio | Flushed responses before EOF, model reuse across novel queries and image updates, refresh after additions/modifications/deletions, image queries, error recovery and clean shutdown |
 | Explicit model verification | `--verify-models` works with installed artifacts and creates the query cache without downloads |
 
 Inline unit tests also cover non-finite embeddings and malformed embedding byte lengths, invalid

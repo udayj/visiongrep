@@ -68,6 +68,9 @@ The default is up to five results with a minimum cosine similarity of `0.25`. Sc
 similarities, not probabilities. Results go to stdout; progress and diagnostics go to stderr.
 Use `--null` for exact paths separated by NUL bytes, or `--quiet` to suppress progress.
 
+Place a search option before a query that is also a subcommand name, as in
+`visiongrep --top 5 server ./photos`.
+
 Exit codes are `0` for matches, `1` for no matches, and `2` for an operational or argument error.
 
 ## Prepare a folder ahead of time
@@ -128,47 +131,11 @@ Ordinary searches, `index`, and `--reindex` start a background server on demand.
 user, cache directory, and VisionGrep binary shares its loaded models across folders. The server
 uses about 400–600 MiB with both models loaded and exits after 10 minutes without requests.
 Run `visiongrep server stop` to request shutdown. Active requests finish before the server exits.
-To run it in the foreground, use `visiongrep serve --socket`.
+To run it in the foreground, use `visiongrep server run`.
 
 Use `--no-server` to run a search or `index` in-process. Searches with `--no-cache`,
 `--verify-models`, or `--timing` always run in-process. A search or indexing command also runs
 in-process if it cannot reach the server.
-
-## Persistent stdio searches
-
-```sh
-visiongrep serve --stdio --index-path photos.db ./photos
-```
-
-Keep the process open and send one JSON object per line on stdin:
-
-```json
-{"id":1,"query":"a dog on the beach","top":3}
-{"id":2,"image":"./reference.jpg","threshold":0.3}
-```
-
-Each request receives one flushed JSON line on stdout, in request order:
-
-```json
-{"id":1,"results":[{"score":0.31,"path":"./photos/beach-dog.jpg"}]}
-{"id":2,"results":[]}
-```
-
-Provide exactly one non-blank `query` or non-empty `image` path. `top` defaults to 5 and must
-be positive; `threshold` defaults to 0.25 and accepts -1 through 1. The optional `id` is a
-string or unsigned 64-bit integer and is echoed back (omitted/null IDs return null). Unknown
-fields are rejected. Paths follow the usual CLI rules: relative paths use the process's working
-directory, and JSON requires UTF-8 paths. Place a search option before a query that is also a
-subcommand name, as in `visiongrep --top 5 serve ./photos`.
-
-Before each search, the service scans for additions, modifications and deletions and updates the
-index. Each request opens SQLite and reads the image vectors. Text and vision models load as
-needed and remain resident until exit. The search directory is resolved at startup.
-
-Request failures return `{"id":1,"error":"..."}` and the service continues. Malformed JSON or
-schema errors return a null ID. Progress and warnings go to stderr. Close stdin to shut down;
-EOF and a closed output pipe exit with code 0, even if individual requests failed or had no matches.
-Startup/I/O failures and request lines exceeding 1 MiB (including the newline) exit with code 2.
 
 ## Index cache and reindexing
 

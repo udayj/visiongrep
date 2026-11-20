@@ -617,7 +617,7 @@ fn connect_or_start() -> Option<UnixStream> {
         Err(_) => return None,
     }
     let mut child = Command::new(executable)
-        .args(["serve", "--socket"])
+        .args(["server", "run"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

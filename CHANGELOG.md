@@ -7,6 +7,8 @@
 - Start a shared socket server automatically for searches, indexing, and reindexing. It loads
   models on demand, serves multiple folders concurrently, and exits after 10 minutes idle.
   Use `server stop` to shut it down or `--no-server` for an in-process run.
+- Run the shared server in the foreground with `visiongrep server run`, which replaces
+  `serve --socket`. Remove `serve --stdio`; use the shared server or `--json` searches instead.
 - Lock each SQLite index across requests and processes, including during database replacement
   by `--reindex`.
 - Requests on an index being indexed or reindexed wait for that job to finish and print a
