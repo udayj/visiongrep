@@ -11,10 +11,8 @@ mod pillow_resize;
 mod ranking;
 mod timing;
 
-use clap::{CommandFactory, error::ErrorKind};
-
 use crate::application::search_with_models;
-use crate::cli::{Cli, ServeMode, ServerAction, Subcommands, Terminal};
+use crate::cli::{Cli, ServerAction, Subcommands, Terminal};
 use crate::error::VisionGrepError;
 use crate::model::Models;
 use crate::timing::{Phase, TimingRecorder};
@@ -35,35 +33,18 @@ fn run() -> Result<ExitStatus, VisionGrepError> {
     let mut cli = Cli::parse_cli();
     let no_server = cli.no_server;
     match cli.subcommand.take() {
-        Some(Subcommands::Serve {
-            path,
-            index_path,
-            mode,
-        }) => {
-            return preserve_status_on_broken_pipe(
-                ExitStatus::Found,
-                match mode.mode() {
-                    ServeMode::Stdio => {
-                        let path = path.as_deref().unwrap_or_else(|| {
-                            Cli::command()
-                                .error(
-                                    ErrorKind::MissingRequiredArgument,
-                                    "provide a directory for --stdio",
-                                )
-                                .exit()
-                        });
-                        crate::cli::serve(path, index_path.as_deref())
-                    }
-                    ServeMode::Socket => crate::cli::serve_socket(),
-                },
-            );
-        }
         Some(Subcommands::Index {
             path,
             index_path,
             quiet,
         }) => {
             crate::cli::index(&path, index_path.as_deref(), quiet, no_server)?;
+            return Ok(ExitStatus::Found);
+        }
+        Some(Subcommands::Server {
+            action: ServerAction::Run,
+        }) => {
+            crate::cli::serve_socket()?;
             return Ok(ExitStatus::Found);
         }
         Some(Subcommands::Server {
