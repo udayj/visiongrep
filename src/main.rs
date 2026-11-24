@@ -9,6 +9,7 @@ mod index;
 mod model;
 mod pillow_resize;
 mod ranking;
+mod shared_server;
 mod timing;
 
 use crate::application::search_with_models;
@@ -44,13 +45,13 @@ fn run() -> Result<ExitStatus, VisionGrepError> {
         Some(Subcommands::Server {
             action: ServerAction::Run,
         }) => {
-            crate::cli::serve_socket()?;
+            shared_server::run()?;
             return Ok(ExitStatus::Found);
         }
         Some(Subcommands::Server {
             action: ServerAction::Stop,
         }) => {
-            crate::cli::stop_socket()?;
+            shared_server::stop()?;
             return Ok(ExitStatus::Found);
         }
         None => {}
@@ -64,7 +65,9 @@ fn run() -> Result<ExitStatus, VisionGrepError> {
     let use_socket =
         !no_server && command.request.can_use_server() && command.timing_destination.is_none();
     let socket_results = if use_socket {
-        crate::cli::try_socket_search(&command.request, &mut terminal)?
+        shared_server::search(&command.request, |event| {
+            terminal.handle_server_event(event)
+        })?
     } else {
         None
     };

@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
@@ -6,7 +7,7 @@ use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use super::terminal::OutputFormat;
 use crate::application::{CacheMode, Query, SearchRequest};
 use crate::model::ArtifactVerification;
-use crate::ranking::DEFAULT_SIMILARITY_THRESHOLD;
+use crate::ranking::{DEFAULT_SIMILARITY_THRESHOLD, SimilarityThreshold};
 use crate::timing::TimingDestination;
 
 #[derive(Debug, Parser)]
@@ -41,11 +42,16 @@ pub(crate) struct Cli {
     #[arg(required = true, help = "Directory to search recursively")]
     path: Option<PathBuf>,
 
-    #[arg(short = 'n', long = "top", default_value_t = 5, value_parser = parse_top, help = "Number of results to return")]
-    top: usize,
+    #[arg(
+        short = 'n',
+        long = "top",
+        default_value = "5",
+        help = "Number of results to return"
+    )]
+    top: NonZeroUsize,
 
-    #[arg(short = 't', long = "threshold", default_value_t = DEFAULT_SIMILARITY_THRESHOLD, allow_negative_numbers = true, value_parser = parse_threshold, help = "Minimum raw CLIP cosine similarity from -1.0 to 1.0")]
-    threshold: f32,
+    #[arg(short = 't', long = "threshold", default_value_t = DEFAULT_SIMILARITY_THRESHOLD, allow_negative_numbers = true, help = "Minimum raw CLIP cosine similarity from -1.0 to 1.0")]
+    threshold: SimilarityThreshold,
 
     #[arg(
         long = "json",
@@ -243,28 +249,6 @@ fn parse_query(value: &str) -> Result<String, String> {
     }
 }
 
-fn parse_threshold(value: &str) -> Result<f32, String> {
-    let parsed = value
-        .parse::<f32>()
-        .map_err(|error| format!("invalid threshold: {error}"))?;
-    if (-1.0..=1.0).contains(&parsed) {
-        Ok(parsed)
-    } else {
-        Err("threshold must be between -1.0 and 1.0".to_owned())
-    }
-}
-
-fn parse_top(value: &str) -> Result<usize, String> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|error| format!("invalid result count: {error}"))?;
-    if parsed == 0 {
-        Err("top must be at least 1".to_owned())
-    } else {
-        Ok(parsed)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,19 +391,11 @@ mod tests {
     }
 
     #[test]
-    fn threshold_accepts_the_full_cosine_range() {
-        assert_eq!(parse_threshold("-1").unwrap(), -1.0);
-        assert_eq!(parse_threshold("1").unwrap(), 1.0);
-        assert!(parse_threshold("-1.01").is_err());
-        assert!(parse_threshold("1.01").is_err());
-    }
-
-    #[test]
     fn cli_accepts_a_negative_threshold() {
         let cli =
             Cli::try_parse_from(["visiongrep", "robot", "photos", "--threshold", "-1"]).unwrap();
 
-        assert_eq!(cli.threshold, -1.0);
+        assert_eq!(cli.threshold.get(), -1.0);
     }
 
     #[test]

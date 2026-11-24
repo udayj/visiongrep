@@ -9,6 +9,7 @@ use crate::error::VisionGrepError;
 use crate::index::IngestEvent;
 use crate::model::ArtifactEvent;
 use crate::ranking::SearchResult;
+use crate::shared_server::Event;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum OutputFormat {
@@ -41,9 +42,7 @@ impl Terminal {
         }
     }
 
-    pub(super) fn handle_socket_event(&mut self, event: super::socket::Event) {
-        use super::socket::Event;
-
+    pub(crate) fn handle_server_event(&mut self, event: Event) {
         match event {
             Event::WaitingForIndex => self.waiting_for_index(),
             Event::IndexStarted { total } => {

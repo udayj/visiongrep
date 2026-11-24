@@ -169,7 +169,7 @@ input[type=number]{font:13px var(--mono);width:96px;padding:4px 6px;border:1.5px
 <header>
   <h1>VisionGrep <span>field map</span></h1>
   <p>How a query like <code>visiongrep "a dog on a beach" ./photos</code> travels through the crate: argument parsing, the auto-started shared server, the SQLite index, CLIP inference with ONNX Runtime, and top-K ranking. Click any box for its responsibilities and invariants, pick a pathway to trace it step by step, and try the algorithms further down.</p>
-  <div class="meta">visiongrep 0.4.2 · branch refactor/server-run · ~11.4k lines of Rust across 28 files</div>
+  <div class="meta">visiongrep 0.4.2 · branch refactor/shared-server · ~9.8k lines of Rust across 28 files</div>
 </header>
 
 <h2>Module map</h2>
@@ -270,12 +270,12 @@ input[type=number]{font:13px var(--mono);width:96px;padding:4px 6px;border:1.5px
     <p class="hint" style="margin-top:10px" id="lifeNote"></p>
   </section>
   <section class="card">
-    <span class="src">cli/socket.rs · runtime.rs · ingest.rs</span>
+    <span class="src">shared_server/serve.rs · runtime.rs · ingest.rs</span>
     <div class="k">Concurrency</div>
     <h3>Every thread in the program</h3>
     <ul style="margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--muted);display:grid;gap:5px">
-      <li><b>Server accept loop</b>: waits on a <code>Condvar</code> until fewer than 8 connections are active, then spawns one scoped thread per connection (30 s socket timeouts, 1 MiB request cap).</li>
-      <li><b>Idle watchdog</b>: when the active count reaches zero, starts a 10-minute timer, then stops the server and wakes the accept loop with a dummy connect.</li>
+      <li><b>Server accept loop</b>: <code>Activity::wait_for_slot</code> waits on a <code>Condvar</code> until fewer than 8 requests are active, then spawns one scoped thread per connection (30 s socket timeouts, 1 MiB request cap).</li>
+      <li><b>Idle watchdog</b>: <code>Activity::stop_when_idle</code> starts a 10-minute timer when the active count reaches zero, then calls <code>shut_down</code>, the same path <code>Stop</code> uses, which wakes the accept loop with a dummy connect.</li>
       <li><b>Text preload</b>: at server start, loads the text session if the artifacts are already verified, so the first text query skips model load.</li>
       <li><b>Tokenizer loader</b>: <code>TextSession::load</code> parses <code>tokenizer.json</code> on a scoped thread while ORT builds the session.</li>
       <li><b>Preprocessing pool</b>: <code>min(cores, 4, files)</code> rayon workers decode and resize images; order and per-file errors are kept.</li>
@@ -371,19 +371,19 @@ const N = [
     rows: [["Exit codes", "0 matches · 1 searched but nothing ≥ threshold · 2 operational or argument error"], ["Server route", "Taken unless <code>--no-server</code>, <code>--no-cache</code>, <code>--verify-models</code> or <code>--timing</code>. If the server can't be reached before it answers, the search reruns in-process."], ["Broken pipe", "<code>preserve_status_on_broken_pipe</code>: a reader closing early keeps the found / not-found status"]] },
   { id: "args", L: "cli", x: A, y: 290, w: 200, h: 70, t: "cli/args.rs", s: ["clap derive → Command"], file: "src/cli/args.rs",
     what: "Typed clap parsing into a Command: a SearchRequest plus output format, quiet flag and timing destination.",
-    rows: [["Validates", "Exactly one query (text or <code>--image</code>), non-blank text, threshold in [-1, 1], top ≥ 1, <code>--reindex</code> ⟂ <code>--no-cache</code>, <code>-0</code> needs <code>--paths-only</code>"], ["Paths", "<code>OsString</code> throughout, so non-UTF-8 image paths survive"], ["Quirk", "A subcommand word can still be a literal query, e.g. <code>visiongrep index ./photos</code> versus <code>visiongrep -- index ./photos</code>"]] },
+    rows: [["Validates", "Exactly one query (text or <code>--image</code>), non-blank text, threshold as <code>SimilarityThreshold</code> in [-1, 1], top as <code>NonZeroUsize</code>, <code>--reindex</code> ⟂ <code>--no-cache</code>, <code>-0</code> needs <code>--paths-only</code>"], ["Paths", "<code>OsString</code> throughout, so non-UTF-8 image paths survive"], ["Quirk", "A subcommand word can still be a literal query, e.g. <code>visiongrep index ./photos</code> versus <code>visiongrep -- index ./photos</code>"]] },
   { id: "indexCmd", L: "cli", x: A, y: 410, w: 200, h: 76, t: "cli/index.rs", s: ["visiongrep index DIR"], file: "src/cli/index.rs",
     what: "Prepares a folder ahead of time: downloads models, embeds new or changed images, and warms both optimized graphs, without running a query.",
-    rows: [["Route", "<code>socket::try_index</code>, else <code>prepare_index</code> in-process"], ["Output", "Nothing on stdout. Prints \"Indexed N images in DIR; searches are ready\" on stderr"], ["Resumable", "Commits every 256 images, so rerunning continues where it stopped"]] },
+    rows: [["Route", "<code>shared_server::index</code>, else <code>prepare_index</code> in-process"], ["Output", "Nothing on stdout. Prints \"Indexed N images in DIR; searches are ready\" on stderr"], ["Resumable", "Commits every 256 images, so rerunning continues where it stopped"]] },
   { id: "terminal", L: "cli", x: A, y: 600, w: 200, h: 96, t: "cli/terminal.rs", s: ["stdout: results", "stderr: progress"], file: "src/cli/terminal.rs",
     what: "All user-facing output. Turns SearchEvents into progress UI on stderr and SearchResults into the chosen stdout format.",
     rows: [["Formats", "<code>Text | Json | PathsOnly | PathsNull</code>"], ["Progress", "indicatif bar on a TTY. Otherwise a plain \"Indexed N/TOTAL images\" line every 256 images"], ["Safety", "Text escapes tabs, newlines, backslashes and invalid UTF-8; JSON rejects non-UTF-8 paths explicitly"]] },
-  { id: "socketClient", L: "cli", x: B, y: 40, w: 210, h: 90, t: "socket client", s: ["connect_or_start", "try_search · try_index"], file: "src/cli/socket.rs",
-    what: "Finds the shared server or starts it, sends one JSON request and relays the streamed events to the Terminal.",
+  { id: "socketClient", L: "cli", x: B, y: 40, w: 210, h: 90, t: "shared_server client", s: ["connect_or_start", "search · index · stop"], file: "src/shared_server/client.rs",
+    what: "Finds the shared server or starts it, sends one JSON request and passes the streamed events to a caller-supplied callback (the CLI hands in Terminal). shared_server never imports cli.",
     rows: [["Socket path", "<code>cache/run/&lt;8 bytes of sha256(exe path, size, mtime)&gt;.sock</code>: one server per user, cache dir and binary build"], ["Auto-start", "Spawns <code>visiongrep server run</code> (null stdio, its own process group) and polls every 10 ms for up to 2 s"], ["Fallback", "Any failure before a response → returns None and main runs in-process"], ["Wire", "Paths travel as raw byte arrays, so non-UTF-8 survives"]] },
-  { id: "socketServer", L: "cli", x: B, y: 190, w: 210, h: 110, t: "shared server", s: ["server run", "≤ 8 conns · 10 min idle", "Models: Process lifetime"], file: "src/cli/socket.rs",
+  { id: "socketServer", L: "cli", x: B, y: 190, w: 210, h: 110, t: "shared_server serve", s: ["server run", "≤ 8 conns · 10 min idle", "Models: Process lifetime"], file: "src/shared_server/serve.rs",
     what: "A background process that keeps both CLIP sessions loaded and serves any folder. Each connection is one JSON request; replies stream progress events, then one final line.",
-    rows: [["Requests", "<code>Search{target, query, top, threshold, reindex}</code> · <code>Index(target)</code> · <code>Stop</code>"], ["Replies", "<code>Event</code>* then <code>Results</code> | <code>Indexed(n)</code> | <code>Error</code> | <code>Stopped</code>"], ["Limits", "8 concurrent connections (Mutex + Condvar), 30 s socket timeouts, 1 MiB per request line"], ["Lifecycle", "Preloads the text model at start; a watchdog exits after 10 idle minutes; <code>visiongrep server stop</code> lets active requests finish"]] },
+    rows: [["Requests", "<code>Search{target, query, top, threshold, reindex}</code> · <code>Index(target)</code> · <code>Stop</code>"], ["Replies", "<code>Event</code>* then <code>Results</code> | <code>Indexed(n)</code> | <code>Error</code> | <code>Stopped</code>"], ["Limits", "8 concurrent requests (<code>Activity</code>: Mutex + Condvar), 30 s socket timeouts, 1 MiB per request line"], ["Lifecycle", "Preloads the text model at start; a watchdog exits after 10 idle minutes; <code>visiongrep server stop</code> lets active requests finish"], ["Module", "<code>shared_server/</code>: <code>address.rs</code> (socket path, bind, stale-socket guard) · <code>protocol.rs</code> (private wire types; bad <code>top</code>/<code>threshold</code> fail to deserialize) · <code>serve.rs</code> · <code>client.rs</code>"]] },
   { id: "ranking", L: "emb", x: B, y: 600, w: 210, h: 90, t: "ranking.rs", s: ["dot product · threshold", "bounded top-K heap"], file: "src/ranking.rs", algo: "algo-heap",
     what: "Scores every candidate against the query and returns a deterministic top-K.",
     rows: [["Score", "<code>left.dot(right)</code>: cosine similarity, because both sides are unit vectors"], ["Threshold", "Inclusive (score ≥ t). Default 0.25. Good matches usually score 0.25–0.35."], ["Selection", "<code>BinaryHeap</code> with reversed ordering, so the root is the worst kept result; final sort by score desc, then path asc"]] },
@@ -530,7 +530,7 @@ const P = [
   { id: "image", name: "Image query", cmd: "visiongrep --image ./photos/beach/dog.jpg ./photos", steps: [
     ["call", "--image gives Query::Image(PathBuf)."],
     ["try", "The client canonicalizes the image path first, so a relative path still works on the server."],
-    ["sock", "The query travels as SocketQuery::Image(absolute path bytes)."],
+    ["sock", "The query travels as protocol::Query::Image(absolute path bytes)."],
     ["srvapp", "search_with_models."],
     ["store", "Open, take the lock, reconcile as usual."],
     ["query", "Query::resolve checks the image is a regular file and opens it once. Opening a pipe could block forever."],
@@ -541,7 +541,7 @@ const P = [
   ]},
   { id: "index", name: "visiongrep index", cmd: "visiongrep index ./photos", steps: [
     ["idx", "The index subcommand. Nothing will be written to stdout."],
-    ["idxsock", "try_index sends Request::Index(target) to the shared server, starting it if needed."],
+    ["idxsock", "shared_server::index sends Request::Index(target) to the shared server, starting it if needed."],
     ["sock", "Progress events stream back and Terminal draws them on stderr."],
     ["srvapp", "The server calls prepare_index."],
     ["store", "Open and reconcile."],

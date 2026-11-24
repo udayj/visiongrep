@@ -1,5 +1,6 @@
 mod query;
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 pub(crate) use query::Query;
@@ -11,7 +12,7 @@ use crate::index::{
     ingest_into_index,
 };
 use crate::model::{ArtifactEvent, ArtifactVerification, Models, embedding_contract};
-use crate::ranking::{Ranker, SearchResult};
+use crate::ranking::{Ranker, SearchResult, SimilarityThreshold};
 use crate::timing::{CacheState, Phase, TimingRecorder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,8 +25,8 @@ pub(crate) enum CacheMode {
 pub(crate) struct SearchRequest {
     query: Query,
     path: PathBuf,
-    top: usize,
-    threshold: f32,
+    top: NonZeroUsize,
+    threshold: SimilarityThreshold,
     cache_mode: CacheMode,
     index_path: Option<PathBuf>,
     artifact_verification: ArtifactVerification,
@@ -35,8 +36,8 @@ impl SearchRequest {
     pub(crate) fn new(
         query: Query,
         path: PathBuf,
-        top: usize,
-        threshold: f32,
+        top: NonZeroUsize,
+        threshold: SimilarityThreshold,
         cache_mode: CacheMode,
         index_path: Option<PathBuf>,
         artifact_verification: ArtifactVerification,
@@ -77,11 +78,11 @@ impl SearchRequest {
         self.index_path.as_deref()
     }
 
-    pub(crate) fn top(&self) -> usize {
+    pub(crate) fn top(&self) -> NonZeroUsize {
         self.top
     }
 
-    pub(crate) fn threshold(&self) -> f32 {
+    pub(crate) fn threshold(&self) -> SimilarityThreshold {
         self.threshold
     }
 }
@@ -94,8 +95,8 @@ pub(crate) enum SearchEvent {
 
 #[derive(Clone, Copy)]
 struct SearchOptions {
-    top: usize,
-    threshold: f32,
+    top: NonZeroUsize,
+    threshold: SimilarityThreshold,
     cache_mode: CacheMode,
 }
 
@@ -315,8 +316,8 @@ fn search_index(
 
 fn rank_query(
     prepared: Option<PreparedQuery>,
-    top: usize,
-    threshold: f32,
+    top: NonZeroUsize,
+    threshold: SimilarityThreshold,
     timing: &mut TimingRecorder,
 ) -> Vec<SearchResult> {
     let Some(prepared) = prepared else {
@@ -415,8 +416,8 @@ mod tests {
         SearchRequest::new(
             Query::Image(query.to_owned()),
             root.to_owned(),
-            1,
-            0.25,
+            NonZeroUsize::MIN,
+            crate::ranking::DEFAULT_SIMILARITY_THRESHOLD,
             cache_mode,
             None,
             ArtifactVerification::Fast,
@@ -568,8 +569,8 @@ mod tests {
         let request = SearchRequest::new(
             Query::Text("robot".to_owned()),
             directory.path().to_owned(),
-            5,
-            0.25,
+            NonZeroUsize::new(5).unwrap(),
+            crate::ranking::DEFAULT_SIMILARITY_THRESHOLD,
             CacheMode::Use,
             None,
             ArtifactVerification::Fast,
@@ -597,8 +598,8 @@ mod tests {
         let request = SearchRequest::new(
             Query::Text("robot".to_owned()),
             root.path().to_owned(),
-            5,
-            0.25,
+            NonZeroUsize::new(5).unwrap(),
+            crate::ranking::DEFAULT_SIMILARITY_THRESHOLD,
             CacheMode::Use,
             Some(index_path.clone()),
             ArtifactVerification::Fast,
