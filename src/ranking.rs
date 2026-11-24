@@ -1,12 +1,66 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::fmt;
+use std::num::NonZeroUsize;
+use std::num::ParseFloatError;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use crate::embedding::NormalizedEmbedding;
 use crate::index::ImageRecord;
 use crate::timing::{Phase, TimingRecorder};
 
-pub(crate) const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.25;
+pub(crate) const DEFAULT_SIMILARITY_THRESHOLD: SimilarityThreshold = SimilarityThreshold(0.25);
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "f32", into = "f32")]
+pub(crate) struct SimilarityThreshold(f32);
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SimilarityThresholdError {
+    #[error("invalid threshold: {0}")]
+    Parse(#[from] ParseFloatError),
+    #[error("threshold must be between -1.0 and 1.0")]
+    OutOfRange,
+}
+
+impl SimilarityThreshold {
+    pub(crate) fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl TryFrom<f32> for SimilarityThreshold {
+    type Error = SimilarityThresholdError;
+
+    fn try_from(value: f32) -> Result<Self, Self::Error> {
+        if (-1.0..=1.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(SimilarityThresholdError::OutOfRange)
+        }
+    }
+}
+
+impl From<SimilarityThreshold> for f32 {
+    fn from(threshold: SimilarityThreshold) -> Self {
+        threshold.get()
+    }
+}
+
+impl FromStr for SimilarityThreshold {
+    type Err = SimilarityThresholdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_from(value.parse::<f32>()?)
+    }
+}
+
+impl fmt::Display for SimilarityThreshold {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct SearchResult {
@@ -16,8 +70,8 @@ pub(crate) struct SearchResult {
 
 pub(crate) struct Ranker<'a> {
     query_embedding: &'a NormalizedEmbedding,
-    top: usize,
-    threshold: f32,
+    top: NonZeroUsize,
+    threshold: SimilarityThreshold,
 }
 
 #[derive(Debug)]
@@ -51,8 +105,8 @@ impl Ord for HeapEntry {
 impl<'a> Ranker<'a> {
     pub(crate) fn new(
         query_embedding: &'a NormalizedEmbedding,
-        top: usize,
-        threshold: f32,
+        top: NonZeroUsize,
+        threshold: SimilarityThreshold,
     ) -> Self {
         Self {
             query_embedding,
@@ -70,16 +124,14 @@ impl<'a> Ranker<'a> {
         images: Vec<ImageRecord>,
         timing: &mut TimingRecorder,
     ) -> Vec<SearchResult> {
-        if self.top == 0 {
-            return Vec::new();
-        }
-
-        let mut heap = BinaryHeap::with_capacity(self.top.min(images.len()));
+        let top = self.top.get();
+        let threshold = self.threshold.get();
+        let mut heap = BinaryHeap::with_capacity(top.min(images.len()));
         for image in images {
             let scoring_started = timing.start();
             let score = cosine_similarity(self.query_embedding, &image.embedding);
             timing.record(Phase::SimilarityScoring, scoring_started);
-            if score < self.threshold {
+            if score < threshold {
                 continue;
             }
 
@@ -88,7 +140,7 @@ impl<'a> Ranker<'a> {
                 score,
                 path: image.path,
             };
-            if heap.len() < self.top {
+            if heap.len() < top {
                 heap.push(HeapEntry(candidate));
             } else {
                 let should_replace = heap
@@ -136,6 +188,23 @@ mod tests {
         NormalizedEmbedding::from_model_output(values).unwrap()
     }
 
+    fn top(count: usize) -> NonZeroUsize {
+        NonZeroUsize::new(count).unwrap()
+    }
+
+    fn threshold(value: f32) -> SimilarityThreshold {
+        SimilarityThreshold::try_from(value).unwrap()
+    }
+
+    #[test]
+    fn threshold_accepts_the_full_cosine_range() {
+        assert_eq!("-1".parse::<SimilarityThreshold>().unwrap().get(), -1.0);
+        assert_eq!("1".parse::<SimilarityThreshold>().unwrap().get(), 1.0);
+        assert!("-1.01".parse::<SimilarityThreshold>().is_err());
+        assert!("1.01".parse::<SimilarityThreshold>().is_err());
+        assert!("NaN".parse::<SimilarityThreshold>().is_err());
+    }
+
     #[test]
     fn cosine_similarity_is_dot_product() {
         let left = embedding(0.6, 0.8);
@@ -147,7 +216,7 @@ mod tests {
     #[test]
     fn ranking_filters_sorts_and_truncates() {
         let query = embedding(1.0, 0.0);
-        let ranker = Ranker::new(&query, 2, 0.5);
+        let ranker = Ranker::new(&query, top(2), threshold(0.5));
         let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
         let results = ranker.rank(
             vec![
@@ -178,7 +247,7 @@ mod tests {
         let tied = embedding(1.0, 0.0);
         let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
 
-        let results = Ranker::new(&query, 2, -1.0).rank(
+        let results = Ranker::new(&query, top(2), threshold(-1.0)).rank(
             vec![
                 ImageRecord {
                     path: PathBuf::from("c.jpg"),
@@ -203,7 +272,7 @@ mod tests {
     #[test]
     fn maximum_top_handles_tiny_and_empty_corpora() {
         let query = embedding(1.0, 0.0);
-        let ranker = Ranker::new(&query, usize::MAX, 0.5);
+        let ranker = Ranker::new(&query, NonZeroUsize::MAX, threshold(0.5));
         let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
         let results = ranker.rank(
             vec![
@@ -238,8 +307,10 @@ mod tests {
         };
         let mut timing = TimingRecorder::disabled(crate::model::timing_metadata());
 
-        let accepted = Ranker::new(&query, 1, 0.5).rank(vec![image.clone()], &mut timing);
-        let rejected = Ranker::new(&query, 1, 0.500_001).rank(vec![image], &mut timing);
+        let accepted =
+            Ranker::new(&query, top(1), threshold(0.5)).rank(vec![image.clone()], &mut timing);
+        let rejected =
+            Ranker::new(&query, top(1), threshold(0.500_001)).rank(vec![image], &mut timing);
 
         assert_eq!(accepted.len(), 1);
         assert!(rejected.is_empty());
@@ -337,7 +408,7 @@ mod tests {
         let query = embedding(1.0, 0.0);
         for corpus_size in [10_000, 100_000] {
             let images = synthetic_images(corpus_size);
-            for threshold in [DEFAULT_SIMILARITY_THRESHOLD, -1.0] {
+            for threshold in [DEFAULT_SIMILARITY_THRESHOLD.get(), -1.0] {
                 for top in [5, 10, 100] {
                     let expected = rank_full_sort(&query, &images, top, threshold);
                     let actual = rank_bounded_heap(&query, &images, top, threshold);

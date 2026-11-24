@@ -446,9 +446,9 @@ impl ImageIndex {
         Ok(index)
     }
 
-    /// Initializes or migrates the persisted embedding contract transactionally.
+    /// Initializes the persisted embedding contract transactionally.
     ///
-    /// Version 2 is migrated without losing its known current embeddings. Contract changes clear
+    /// An index from any older schema version is rebuilt from scratch. Contract changes clear
     /// only the affected vector family, while a wrong-root reuse is rejected before mutation.
     fn init(
         &mut self,
@@ -479,7 +479,7 @@ impl ImageIndex {
 
         let index_path = self.path.clone();
         let transaction = self.conn.transaction()?;
-        if version < 2 {
+        if version < EMBEDDING_CACHE_VERSION {
             transaction.execute_batch(
                 "DROP TABLE IF EXISTS images;
                  DROP TABLE IF EXISTS queries;
@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn version_two_index_migrates_without_losing_known_embeddings() {
+    fn previous_schema_version_is_rebuilt() {
         let directory = tempfile::tempdir().unwrap();
         let location = local_location(directory.path());
         let conn = Connection::open(location.path()).unwrap();
@@ -1254,7 +1254,7 @@ mod tests {
 
         let index = ImageIndex::open(&location, directory.path(), test_contract(), || {}).unwrap();
 
-        assert_eq!(index.all_embeddings(Path::new("")).unwrap().len(), 1);
+        assert!(index.all_embeddings(Path::new("")).unwrap().is_empty());
         assert_eq!(
             index
                 .conn

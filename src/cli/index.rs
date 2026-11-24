@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use super::socket;
 use super::terminal::{OutputFormat, Terminal};
 use crate::application::prepare_index;
 use crate::error::VisionGrepError;
 use crate::model::{ArtifactVerification, Models};
+use crate::shared_server;
 
 /// Runs `visiongrep index`, reporting progress and the final image count on stderr.
 pub(crate) fn index(
@@ -17,7 +17,9 @@ pub(crate) fn index(
     let remote = if no_server {
         None
     } else {
-        socket::try_index(path, index_path, &mut terminal)?
+        shared_server::index(path, index_path, |event| {
+            terminal.handle_server_event(event)
+        })?
     };
     let images = match remote {
         Some(images) => images,
