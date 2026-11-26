@@ -12,7 +12,8 @@ pub(crate) enum Query {
     Image(PathBuf),
 }
 
-pub(super) enum ResolvedQuery<'a> {
+/// A query whose image path is canonical and names a readable regular file.
+pub(crate) enum ResolvedQuery<'a> {
     Text(&'a str),
     Image(PathBuf),
 }
@@ -24,7 +25,7 @@ pub(super) struct PreparedQuery {
 }
 
 impl Query {
-    pub(super) fn resolve(&self) -> Result<ResolvedQuery<'_>, VisionGrepError> {
+    pub(crate) fn resolve(&self) -> Result<ResolvedQuery<'_>, VisionGrepError> {
         match self {
             Self::Text(text) => Ok(ResolvedQuery::Text(text)),
             Self::Image(path) => {

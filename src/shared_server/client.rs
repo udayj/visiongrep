@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::address::socket_path;
-use super::protocol::{self, Event, Request, Response, Target, write_line};
-use crate::application::{Query, SearchRequest, resolve_root};
+use super::protocol::{Event, Request, Response, Target, write_line};
+use crate::application::{SearchRequest, resolve_root};
 use crate::error::VisionGrepError;
 use crate::index::{IndexLocation, SearchRoot};
 use crate::ranking::SearchResult;
@@ -21,21 +21,11 @@ pub(crate) fn search(
     request: &SearchRequest,
     on_event: impl FnMut(Event),
 ) -> Result<Option<Vec<SearchResult>>, VisionGrepError> {
+    // Validate locally first so errors name the user's paths and an invalid request starts no server.
     let (root, target) = resolve_target(request.path(), request.index_path())?;
+    let query = request.query().resolve()?.into();
     let Some(stream) = connect_or_start() else {
         return Ok(None);
-    };
-    let query = match request.query() {
-        Query::Text(text) => protocol::Query::Text(text.clone()),
-        Query::Image(path) => {
-            let absolute =
-                path.canonicalize()
-                    .map_err(|source| VisionGrepError::QueryImageOpen {
-                        path: path.clone(),
-                        source,
-                    })?;
-            protocol::Query::Image(absolute.as_os_str().as_bytes().to_vec())
-        }
     };
     let request = Request::Search {
         target,
@@ -44,7 +34,7 @@ pub(crate) fn search(
         threshold: request.threshold(),
         reindex: request.is_reindex(),
     };
-    let results = match exchange(stream, &request, on_event)? {
+    let results = match send_request(stream, &request, on_event)? {
         Reply::Response(Response::Results(results)) => results,
         Reply::Unanswered => return Ok(None),
         _ => return Err(invalid_response()),
@@ -69,7 +59,7 @@ pub(crate) fn index(
     let Some(stream) = connect_or_start() else {
         return Ok(None);
     };
-    match exchange(stream, &Request::Index(target), on_event)? {
+    match send_request(stream, &Request::Index(target), on_event)? {
         Reply::Response(Response::Indexed(count)) => Ok(Some(count)),
         Reply::Unanswered => Ok(None),
         _ => Err(invalid_response()),
@@ -83,7 +73,7 @@ pub(crate) fn stop() -> Result<(), VisionGrepError> {
         Err(error) if no_listener(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    match exchange(stream, &Request::Stop, |_| {})? {
+    match send_request(stream, &Request::Stop, |_| {})? {
         Reply::Response(Response::Stopped) | Reply::Unanswered => Ok(()),
         _ => Err(invalid_response()),
     }
@@ -95,7 +85,7 @@ fn resolve_target(
 ) -> Result<(SearchRoot, Target), VisionGrepError> {
     let root = resolve_root(path)?;
     let index = IndexLocation::resolve(root.filesystem_path(), index)?;
-    let target = Target::new(root.filesystem_path(), index.path());
+    let target = Target::new(&root, &index);
     Ok((root, target))
 }
 
@@ -106,7 +96,8 @@ enum Reply {
     Unanswered,
 }
 
-fn exchange(
+/// Sends one request, forwards progress events, and returns the server's final reply.
+fn send_request(
     mut stream: UnixStream,
     request: &Request,
     mut on_event: impl FnMut(Event),
@@ -206,11 +197,13 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     use super::*;
+    use crate::application::{CacheMode, Query};
+    use crate::model::ArtifactVerification;
 
     #[test]
     fn connection_close_allows_fallback_only_before_a_response() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("exchange.sock");
+        let path = directory.path().join("request.sock");
         let listener = UnixListener::bind(&path).unwrap();
         for event in [None, Some(Event::IndexFinished)] {
             let expect_event = event.is_some();
@@ -224,7 +217,7 @@ mod tests {
                         write_line(&mut stream, &Response::Event(event)).unwrap();
                     }
                 });
-                exchange(UnixStream::connect(&path).unwrap(), &Request::Stop, |_| {
+                send_request(UnixStream::connect(&path).unwrap(), &Request::Stop, |_| {
                     received = true;
                 })
             });
@@ -238,5 +231,26 @@ mod tests {
                 assert!(matches!(response, Ok(Reply::Unanswered)));
             }
         }
+    }
+
+    #[test]
+    fn image_query_is_validated_before_contacting_the_server() {
+        let directory = tempfile::tempdir().unwrap();
+        let query = directory.path().join("not-a-file");
+        std::fs::create_dir(&query).unwrap();
+        let request = SearchRequest::new(
+            Query::Image(query.clone()),
+            directory.path().to_owned(),
+            std::num::NonZeroUsize::MIN,
+            crate::ranking::DEFAULT_SIMILARITY_THRESHOLD,
+            CacheMode::Use,
+            None,
+            ArtifactVerification::Fast,
+        );
+        let result = search(&request, |_| panic!("no server should be contacted"));
+        assert!(matches!(
+            result,
+            Err(VisionGrepError::QueryImageNotFile { path }) if path == query
+        ));
     }
 }

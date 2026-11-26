@@ -3,8 +3,8 @@ mod query;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-pub(crate) use query::Query;
-use query::{PreparedQuery, ResolvedQuery};
+use query::PreparedQuery;
+pub(crate) use query::{Query, ResolvedQuery};
 
 use crate::error::VisionGrepError;
 use crate::index::{

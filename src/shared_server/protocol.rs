@@ -2,13 +2,13 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::num::NonZeroUsize;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::application::SearchEvent;
+use crate::application::{ResolvedQuery, SearchEvent};
 use crate::error::VisionGrepError;
-use crate::index::IngestEvent;
+use crate::index::{IndexLocation, IngestEvent, SearchRoot};
 use crate::model::ArtifactEvent;
 use crate::ranking::SimilarityThreshold;
 
@@ -34,10 +34,11 @@ pub(super) struct Target {
 }
 
 impl Target {
-    pub(super) fn new(root: &Path, index: &Path) -> Self {
+    /// Takes resolved locations so only absolute paths reach the wire.
+    pub(super) fn new(root: &SearchRoot, index: &IndexLocation) -> Self {
         Self {
-            root: root.as_os_str().as_bytes().to_vec(),
-            index: index.as_os_str().as_bytes().to_vec(),
+            root: root.filesystem_path().as_os_str().as_bytes().to_vec(),
+            index: index.path().as_os_str().as_bytes().to_vec(),
         }
     }
 
@@ -61,6 +62,15 @@ pub(super) fn absolute_path(bytes: Vec<u8>) -> io::Result<PathBuf> {
 pub(super) enum Query {
     Text(String),
     Image(Vec<u8>),
+}
+
+impl From<ResolvedQuery<'_>> for Query {
+    fn from(query: ResolvedQuery<'_>) -> Self {
+        match query {
+            ResolvedQuery::Text(text) => Self::Text(text.to_owned()),
+            ResolvedQuery::Image(path) => Self::Image(path.into_os_string().into_vec()),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -173,5 +183,12 @@ mod tests {
         assert_eq!(index, root);
         assert!(absolute_path(b"relative".to_vec()).is_err());
         assert!(absolute_path(b"/tmp/\0.png".to_vec()).is_err());
+    }
+
+    #[test]
+    fn resolved_image_query_keeps_native_path_bytes() {
+        let path = b"/tmp/\xff.png".to_vec();
+        let query = ResolvedQuery::Image(PathBuf::from(OsString::from_vec(path.clone())));
+        assert!(matches!(Query::from(query), Query::Image(bytes) if bytes == path));
     }
 }
